@@ -93,7 +93,7 @@ function ensureDir(dir) {
 async function stepPersonality() {
   header('Step 1/4: Personality');
 
-  const name = await ask(`${C.yellow}📛 Assistant name:${C.reset}`, 'Nayla');
+  const name = await ask(`${C.yellow}📛 Assistant name:${C.reset}`, 'MetaClaw');
 
   console.log(`${C.yellow}🎭 Personality style:${C.reset}`);
   console.log('  1. Chill & friendly (casual, bahasa gaul)');

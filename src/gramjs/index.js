@@ -17,10 +17,13 @@ const projectRoot = path.join(__dirname, '../..');
 // Load env
 dotenv.config({ path: path.join(projectRoot, '.env') });
 
-// Load config (config.local.yaml > config.yaml)
+// Load config (config.local.yaml > config.yaml > config.yaml.example)
 const localConfigPath = path.join(projectRoot, 'config.local.yaml');
 const defaultConfigPath = path.join(projectRoot, 'config.yaml');
-const configPath = fs.existsSync(localConfigPath) ? localConfigPath : defaultConfigPath;
+const exampleConfigPath = path.join(projectRoot, 'config.yaml.example');
+const configPath = fs.existsSync(localConfigPath) ? localConfigPath
+  : fs.existsSync(defaultConfigPath) ? defaultConfigPath
+  : exampleConfigPath;
 const rawConfig = fs.readFileSync(configPath, 'utf-8');
 const config = yaml.load(rawConfig.replace(/\$\{(\w+)\}/g, (_, k) => process.env[k] || ''));
 console.log(`📋 Config loaded from ${path.basename(configPath)}`);
