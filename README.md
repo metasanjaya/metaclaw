@@ -33,22 +33,30 @@ Personal AI assistant running on Telegram via GramJS (MTProto).
 ## Quick Start
 
 ```bash
-# Clone
+# 1. Clone & install
 git clone https://github.com/metasanjaya/metaclaw
 cd metaclaw
-
-# Install & setup (auto-installs pm2, configures everything)
 npm run install-all
 
-# Run the setup wizard
+# 2. Run the setup wizard (personality, AI keys, Telegram credentials)
 npm run setup
 
-# Start MetaClaw
+# 3. First-time login (interactive — requires terminal input)
+node src/gramjs/index.js
+# → Enter phone number, login code from Telegram, 2FA password (if any)
+# → Wait until "GramJS Bridge listening for messages" appears
+# → Press Ctrl+C to stop
+
+# 4. Start with pm2 (auto-restart, background)
 pm2 start src/gramjs/index.js --name metaclaw
 pm2 save
+pm2 startup  # auto-start on reboot
 
-# Then send /start <YOUR_CODE> to your bot/account on Telegram!
+# 5. Send /start <YOUR_CODE> to your bot/account on Telegram!
+#    (code was generated in step 2)
 ```
+
+> **Note:** Step 3 is only needed once. After login, session is saved to `data/session.txt` and pm2 can restart without re-login.
 
 ## One-Line Install
 ```bash
