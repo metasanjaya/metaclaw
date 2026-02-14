@@ -667,6 +667,28 @@ Message: "${text.substring(0, 200)}"`;
     return calls;
   }
 
+  // Patterns that indicate long-running commands (>10s expected)
+  _isLongRunningCmd(cmd) {
+    const patterns = [
+      /\bsleep\s+\d{2,}/i,          // sleep 30+
+      /\bapt\s+(install|update|upgrade)/i,
+      /\bnpm\s+(install|run\s+build|ci)/i,
+      /\byarn\s+(install|build)/i,
+      /\bpip\s+install/i,
+      /\bgit\s+(clone|pull)/i,
+      /\bdocker\s+(build|pull|push)/i,
+      /\bcurl\s+.*&&\s*sleep/i,      // curl + sleep combo
+      /\bwget\s+/i,
+      /\bmake\b/i,
+      /\bcargo\s+build/i,
+      /\brsync\b/i,
+      /\bscp\b/i,
+      /\bdd\s+/i,
+      /\btar\s+.*[xc]z?f/i,          // tar extract/create
+    ];
+    return patterns.some(p => p.test(cmd));
+  }
+
   async _executeToolCalls(toolCalls, imagePath) {
     const results = [];
     for (const call of toolCalls) {
@@ -674,8 +696,21 @@ Message: "${text.substring(0, 200)}"`;
       try {
         switch (call.type) {
           case 'shell':
-            result = await this.tools.execShell(call.content);
-            result = result.stdout + (result.stderr ? `\nSTDERR: ${result.stderr}` : '');
+            // Auto-detect long-running commands → run async
+            if (this._isLongRunningCmd(call.content) && this.asyncTasks) {
+              const taskId = this.asyncTasks.add({
+                peerId: this._currentPeerId,
+                chatId: this._currentChatId,
+                cmd: call.content,
+                msg: 'Analisis dan rangkum hasil command ini',
+                timeout: 300000, // 5 min for long tasks
+              });
+              result = `⚡ Command berjalan di background (task ${taskId}). Hasil akan dikirim otomatis setelah selesai.`;
+              console.log(`  ⚡ Auto-async: "${call.content.substring(0, 60)}" → task ${taskId}`);
+            } else {
+              result = await this.tools.execShell(call.content);
+              result = result.stdout + (result.stderr ? `\nSTDERR: ${result.stderr}` : '');
+            }
             break;
           case 'search':
             const searchResults = await this.tools.webSearch(call.content);
@@ -1004,6 +1039,10 @@ Message: "${text.substring(0, 200)}"`;
           }
           this.conversationMgr.addMessage(chatId, 'user', userContent);
 
+          // Track current context for auto-async tool calls
+          this._currentPeerId = String(peerId);
+          this._currentChatId = chatId;
+
           const systemPrompt = await this._buildSystemPrompt(text || 'image analysis');
           console.log(`🧠 Processing: "${(text || '[image]').substring(0, 60)}" from ${msg.senderName}`);
 
@@ -1032,7 +1071,7 @@ Message: "${text.substring(0, 200)}"`;
             chatId, systemPrompt, imagePath, 3, text || 'image analysis'
           );
           const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Processing timeout (90s)')), 90000)
+            setTimeout(() => reject(new Error('Processing timeout (180s)')), 180000)
           );
           const { responseText: rawResponse, tokensUsed } = await Promise.race([processPromise, timeoutPromise])
             .catch(err => {
@@ -1212,10 +1251,21 @@ Message: "${text.substring(0, 200)}"`;
           }
 
           if (responseText) {
-            if (placeholderMsgId) {
-              await this.gram.editMessage(peerId, placeholderMsgId, responseText);
-            } else {
-              await this.gram.sendMessage(peerId, responseText, replyTo);
+            console.log(`  📨 Sending response (${responseText.length} chars)...`);
+            try {
+              if (placeholderMsgId) {
+                await this.gram.editMessage(peerId, placeholderMsgId, responseText);
+              } else {
+                await this.gram.sendMessage(peerId, responseText, replyTo);
+              }
+            } catch (sendErr) {
+              console.error(`  ❌ Send failed: ${sendErr.message}`);
+              // Emergency fallback: try sending truncated
+              try {
+                await this.gram.sendMessage(peerId, responseText.substring(0, 2000) + '\n\n...(truncated)', replyTo);
+              } catch (e2) {
+                console.error(`  ❌ Emergency send also failed: ${e2.message}`);
+              }
             }
           } else if (placeholderMsgId) {
             // No text response, delete placeholder

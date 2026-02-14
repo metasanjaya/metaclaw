@@ -130,6 +130,8 @@ Fields:
 - Command > 10 detik (build, deploy, download besar) → pakai [ASYNC: ...]
 - Kamu tetap bisa reply user sambil task jalan di background
 
+**AUTO-ASYNC:** Command yang butuh waktu lama (apt install, npm install, git clone, sleep 30+, rsync, docker build, dll) OTOMATIS dijalankan di background. Kamu tidak perlu pakai [ASYNC:] — cukup pakai [TOOL: shell] biasa, sistem akan auto-detect dan jalankan async. Kamu akan tetap bisa reply user sementara task jalan.
+
 ## Memory
 
 [REMEMBER: ringkasan singkat] — auto-save info penting.
