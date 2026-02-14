@@ -35,6 +35,15 @@ export class AsyncTaskManager {
     this._load();
   }
 
+  /** Sanitize command strings — mask passwords, keys, tokens */
+  _sanitizeCmd(cmd) {
+    return (cmd || '')
+      .replace(/sshpass\s+-p\s+'[^']*'/g, "sshpass -p '***'")
+      .replace(/sshpass\s+-p\s+\S+/g, "sshpass -p ***")
+      .replace(/(API_KEY|TOKEN|SECRET|PASSWORD|KEY)=\S+/gi, '$1=***')
+      .replace(/(Bearer\s+)\S+/gi, '$1***');
+  }
+
   setAgentFn(fn) {
     this.agentFn = fn;
   }
@@ -77,7 +86,7 @@ export class AsyncTaskManager {
     // Start execution
     this._executeTask(task);
 
-    console.log(`  ⚡ Async task [${id}]: "${cmd.substring(0, 60)}" (timeout: ${timeout / 1000}s)`);
+    console.log(`  ⚡ Async task [${id}]: "${this._sanitizeCmd(cmd).substring(0, 60)}" (timeout: ${timeout / 1000}s)`);
     return id;
   }
 
@@ -195,7 +204,7 @@ export class AsyncTaskManager {
     if (task.status === 'failed' || task.status === 'timeout') {
       if (this.agentFn && task.aiAnalysis) {
         // Let AI explain the error
-        const prompt = `[Async task failed]\nCommand: ${task.cmd}\nStatus: ${task.status}\nError: ${task.error}\nOutput: ${output.substring(0, 1000)}\n\nJelaskan error ini ke user dan suggest fix.`;
+        const prompt = `[Async task failed]\nCommand: ${this._sanitizeCmd(task.cmd)}\nStatus: ${task.status}\nError: ${task.error}\nOutput: ${output.substring(0, 1000)}\n\nJelaskan error ini ke user dan suggest fix.`;
         await this.agentFn(task.peerId, task.chatId, prompt);
       } else {
         await this.sendFn(task.peerId,
@@ -223,7 +232,7 @@ export class AsyncTaskManager {
 
     // Send to AI for analysis (or direct if no agentFn)
     if (this.agentFn && task.aiAnalysis) {
-      const prompt = `[Async task completed]\nCommand: ${task.cmd}\nDuration: ${duration}s\nOutput:\n\`\`\`\n${output.substring(0, 3000)}\n\`\`\`\n\nTask: ${task.msg}`;
+      const prompt = `[Async task completed]\nCommand: ${this._sanitizeCmd(task.cmd)}\nDuration: ${duration}s\nOutput:\n\`\`\`\n${output.substring(0, 3000)}\n\`\`\`\n\nTask: ${task.msg}`;
       await this.agentFn(task.peerId, task.chatId, prompt);
     } else {
       await this.sendFn(task.peerId,

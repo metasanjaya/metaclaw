@@ -16,6 +16,8 @@ import { ChatQueue } from './ChatQueue.js';
 import { TaskRunner } from './TaskRunner.js';
 import { AsyncTaskManager } from './AsyncTaskManager.js';
 import { ConversationManager } from './ConversationManager.js';
+import { KnowledgeManager } from './KnowledgeManager.js';
+import { TaskPlanner } from './TaskPlanner.js';
 import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
@@ -113,7 +115,7 @@ export class GramJSBridge {
       },
       // Agent function — route through AI pipeline
       async (peerId, chatId, prompt) => {
-        const systemPrompt = await this._buildSystemPrompt(prompt);
+        const systemPrompt = await this._buildSystemPrompt(prompt, chatId);
         await this.gram.setTyping(peerId);
         const typingInterval = setInterval(() => {
           this.gram.setTyping(peerId).catch(() => {});
@@ -154,7 +156,7 @@ export class GramJSBridge {
         }
 
         // Condition met (or no condition) → feed to AI
-        const systemPrompt = await this._buildSystemPrompt(prompt);
+        const systemPrompt = await this._buildSystemPrompt(prompt, chatId);
         const combinedPrompt = `[Scheduled check — condition triggered]\nCommand: ${command}\nCondition: ${condition || 'none'}\nOutput:\n\`\`\`\n${cmdOutput}\n\`\`\`\n\nTask: ${prompt}`;
         await this.gram.setTyping(peerId);
         const typingInterval = setInterval(() => {
@@ -162,7 +164,12 @@ export class GramJSBridge {
         }, 6000);
         try {
           this.conversationMgr.addMessage(chatId, 'user', combinedPrompt);
-          const { responseText } = await this._callAIWithHistory(chatId, systemPrompt, null, prompt);
+          const maxRounds = this.config?.tools?.max_rounds || 20;
+          const { responseText: rawSchedText } = await this._processWithTools(chatId, systemPrompt, null, maxRounds, prompt);
+          let responseText = (rawSchedText || '').replace(/\[TOOL:\s*\w+[^\]]*\][\s\S]*?\[\/TOOL\]/gi, '').replace(/\[TOOL:\s*\w+\]\s*/gi, '').replace(/\[\/TOOL\]\s*/gi, '').trim();
+          responseText = responseText.replace(/-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g, '[content saved to file]');
+          responseText = responseText.replace(/(?:^[A-Za-z0-9+\/=]{40,}\n){5,}/gm, '[...truncated...]\n');
+          if (responseText.length > 2000) responseText = responseText.substring(0, 1900) + '\n\n...(truncated)';
           clearInterval(typingInterval);
           if (responseText) {
             this.conversationMgr.addMessage(chatId, 'assistant', responseText);
@@ -184,22 +191,30 @@ export class GramJSBridge {
       // Agent function for AI analysis of results
       async (peerId, chatId, prompt) => {
         console.log(`  🤖 Async agentFn: analyzing result for ${chatId} (${prompt.length} chars prompt)`);
-        const systemPrompt = await this._buildSystemPrompt(prompt);
+        const systemPrompt = await this._buildSystemPrompt(prompt, chatId);
         await this.gram.setTyping(peerId);
         const typingInterval = setInterval(() => {
           this.gram.setTyping(peerId).catch(() => {});
         }, 6000);
         try {
           this.conversationMgr.addMessage(chatId, 'user', `[Async task result] ${prompt}`);
-          const { responseText } = await this._callAIWithHistory(chatId, systemPrompt, null, prompt);
+          const maxRounds = this.config?.tools?.max_rounds || 20;
+          const { responseText: rawText } = await this._processWithTools(chatId, systemPrompt, null, maxRounds, prompt);
+          let responseText = (rawText || '').replace(/\[TOOL:\s*\w+[^\]]*\][\s\S]*?\[\/TOOL\]/gi, '').replace(/\[TOOL:\s*\w+\]\s*/gi, '').replace(/\[\/TOOL\]\s*/gi, '').trim();
+          // Same output sanitization as main flow
+          responseText = responseText.replace(/-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g, '[content saved to file]');
+          responseText = responseText.replace(/(?:^[A-Za-z0-9+\/=]{40,}\n){5,}/gm, '[...truncated...]\n');
+          if (responseText.length > 2000) responseText = responseText.substring(0, 1900) + '\n\n...(truncated)';
           clearInterval(typingInterval);
           if (responseText) {
             console.log(`  📨 Async sending response (${responseText.length} chars)...`);
             this.conversationMgr.addMessage(chatId, 'assistant', responseText);
             await this.gram.sendMessage(peerId, responseText);
           } else {
-            console.warn(`  ⚠️ Async agentFn: AI returned empty response`);
-            await this.gram.sendMessage(peerId, '⚡ Task selesai tapi AI gak bisa rangkum hasilnya. Coba tanya ulang ya.');
+            // Fallback: send raw output instead of useless error
+            console.warn(`  ⚠️ Async agentFn: AI returned empty, falling back to raw output`);
+            const rawPrompt = prompt.substring(0, 2000);
+            await this.gram.sendMessage(peerId, `⚡ Hasil task:\n${rawPrompt}`);
           }
         } catch (e) {
           clearInterval(typingInterval);
@@ -223,6 +238,8 @@ export class GramJSBridge {
     // Memory & RAG (initialized async in start())
     this.memory = new MemoryManager();
     this.rag = null;
+    this.knowledge = new KnowledgeManager();
+    this.planner = new TaskPlanner();
 
     console.log(`🧬 Core personality loaded (${this.corePrompt.length} chars)`);
     console.log('🌉 GramJS Bridge initialized (Google Gemini 2.5 Pro)');
@@ -334,7 +351,7 @@ export class GramJSBridge {
     return outputTrimmed !== cond;
   }
 
-  async _buildSystemPrompt(userMessage) {
+  async _buildSystemPrompt(userMessage, chatId = null) {
     // Inject current time awareness
     const now = new Date();
     const wib = new Date(now.getTime() + 7 * 3600000);
@@ -345,6 +362,15 @@ export class GramJSBridge {
     const timeStr = `${days[wib.getUTCDay()]}, ${wib.getUTCDate()} ${months[wib.getUTCMonth()]} ${wib.getUTCFullYear()} ${String(wib.getUTCHours()).padStart(2,'0')}:${String(wib.getUTCMinutes()).padStart(2,'0')} WIB (${timeOfDay})`;
 
     let prompt = this.corePrompt + `\n\n## Waktu Sekarang\n${timeStr}\n`;
+
+    // Knowledge Base: inject relevant facts
+    if (this.knowledge) {
+      const kb = this.knowledge.buildContext(userMessage);
+      if (kb) {
+        prompt += kb;
+        console.log(`  🧠 Knowledge: ${this.knowledge.findRelevant(userMessage).length} facts injected`);
+      }
+    }
 
     // RAG: find relevant context
     if (this.rag) {
@@ -361,6 +387,12 @@ export class GramJSBridge {
       } catch (err) {
         console.warn('  ⚠️ RAG search failed:', err.message);
       }
+    }
+
+    // Task Planner: inject active plan
+    if (this.planner && chatId) {
+      const planCtx = this.planner.buildContext(chatId);
+      if (planCtx) prompt += planCtx;
     }
 
     return prompt;
@@ -713,7 +745,8 @@ Message: "${text.substring(0, 200)}"`;
                 timeout: 300000, // 5 min for long tasks
               });
               result = `⚡ Command berjalan di background (task ${taskId}). Hasil akan dikirim otomatis setelah selesai.`;
-              console.log(`  ⚡ Auto-async: "${call.content.substring(0, 60)}" → task ${taskId}`);
+              const safeLog = call.content.replace(/sshpass\s+-p\s+'[^']*'/g, "sshpass -p '***'").replace(/sshpass\s+-p\s+\S+/g, "sshpass -p ***").substring(0, 60);
+              console.log(`  ⚡ Auto-async: "${safeLog}" → task ${taskId}`);
             } else {
               result = await this.tools.execShell(call.content);
               result = result.stdout + (result.stderr ? `\nSTDERR: ${result.stderr}` : '');
@@ -810,14 +843,16 @@ Message: "${text.substring(0, 200)}"`;
     providerName = modelCfg.provider;
     modelName = modelCfg.model;
 
-    console.log(`  🧠 Routing: ${complexity} → ${providerName}/${modelName}`);
+    // Dynamic maxTokens based on complexity
+    const maxTokens = complexity === 'complex' ? 8192 : 2048;
+    console.log(`  🧠 Routing: ${complexity} → ${providerName}/${modelName} (maxTokens: ${maxTokens})`);
 
     // Try primary with retry, then fallback
     const callProvider = async (pName, mName) => {
       const provider = this.ai._getProvider(pName);
       const result = await provider.chat(messages, {
         model: mName,
-        maxTokens: 1500,
+        maxTokens,
         temperature: 0.7,
       });
       return result;
@@ -881,6 +916,25 @@ Message: "${text.substring(0, 200)}"`;
       const toolCalls = this._parseToolCalls(responseText);
 
       if (toolCalls.length === 0) {
+        // Detect truncated response — AI wanted to use a tool but got cut off
+        const trimmed = responseText.trim();
+        const hasPartialTool = /\[TOOL:\s*\w*$/.test(trimmed) || /\[TOOL:[^\]]*$/.test(trimmed);
+        // Also detect responses that clearly plan to act but didn't include tool
+        const endsWithAction = /(?:sekarang|lanjut|berikut|ini|nya|setup|install|execute|run|config).*[:\.]\s*$/i.test(trimmed) && trimmed.length < 200;
+        const planningToAct = /(?:gue |aku |gw |saya )(?:akan |mau |coba |tulis|bikin|download|upload|setup|install|push|copy|restart)/i.test(trimmed) && trimmed.length < 200;
+        const looksIncomplete = hasPartialTool || endsWithAction || planningToAct;
+        // Max 2 auto-continues per request
+        if (!this._truncContinues) this._truncContinues = 0;
+        if (looksIncomplete && this._truncContinues < 2 && round < maxRounds - 1) {
+          this._truncContinues++;
+          console.log(`  ⚠️ Truncated response detected (round ${round + 1}): ${hasPartialTool ? 'partial tool' : 'incomplete sentence'}`);
+          if (this.conversationMgr) {
+            this.conversationMgr.addMessage(chatId, 'assistant', trimmed);
+            this.conversationMgr.addMessage(chatId, 'user', '[System: Response terpotong. Langsung EKSEKUSI pakai [TOOL:] — jangan ulangi penjelasan, langsung action.]');
+          }
+          continue;
+        }
+        this._truncContinues = 0;
         return { responseText, tokensUsed: totalTokens };
       }
 
@@ -888,10 +942,30 @@ Message: "${text.substring(0, 200)}"`;
       const toolResults = await this._executeToolCalls(toolCalls, imagePath);
       const toolOutput = toolResults.map(r => `[${r.type}]:\n${r.result}`).join('\n\n');
 
+      // Strip tool tags from assistant message before saving to history
+      const cleanAssistant = responseText.replace(/\[TOOL:\s*\w+[^\]]*\][\s\S]*?\[\/TOOL\]/gi, '').trim();
+
+      // Detect repeated errors — if same error appears 2+ times, force stop
+      const hasPermDenied = toolOutput.includes('Permission denied');
+      const hasConnRefused = toolOutput.includes('Connection refused') || toolOutput.includes('Connection timed out');
+      const hasApiError = toolOutput.includes('"success":false') || toolOutput.includes('"success": false') || toolOutput.includes('invalid_access');
+      const hasRepeatedError = hasPermDenied || hasConnRefused || hasApiError;
+      if (hasRepeatedError) {
+        this._lastErrorType = (this._lastErrorType === 'access') ? 'access_repeat' : 'access';
+      } else {
+        this._lastErrorType = null;
+      }
+
       // Add tool interaction to conversation history
       if (this.conversationMgr) {
-        this.conversationMgr.addMessage(chatId, 'assistant', responseText);
-        this.conversationMgr.addMessage(chatId, 'user', `Tool results:\n${toolOutput}\n\nNow give your final response to the user.`);
+        if (cleanAssistant) this.conversationMgr.addMessage(chatId, 'assistant', cleanAssistant);
+        if (this._lastErrorType === 'access_repeat') {
+          // Force AI to stop retrying and ask user
+          this.conversationMgr.addMessage(chatId, 'user', `Tool results:\n${toolOutput}\n\n[System: STOP. Error yang sama sudah terjadi 2x berturut-turut. JANGAN coba lagi. Langsung kasih tau user masalahnya dan tanya solusi/akses alternatif. JANGAN pakai tools lagi.]`);
+          this._lastErrorType = null;
+        } else {
+          this.conversationMgr.addMessage(chatId, 'user', `Tool results:\n${toolOutput}\n\nKalau task BELUM selesai, langsung pakai [TOOL:] untuk step berikutnya. Kalau SUDAH selesai, kasih hasil ke user. JANGAN bilang "gue akan..." tanpa langsung eksekusi.`);
+        }
       }
 
       console.log(`  🔄 Tool round ${round + 1}/${maxRounds}`);
@@ -1054,7 +1128,7 @@ Message: "${text.substring(0, 200)}"`;
           this._currentPeerId = String(peerId);
           this._currentChatId = chatId;
 
-          const systemPrompt = await this._buildSystemPrompt(text || 'image analysis');
+          const systemPrompt = await this._buildSystemPrompt(text || 'image analysis', chatId);
           console.log(`🧠 Processing: "${(text || '[image]').substring(0, 60)}" from ${msg.senderName}`);
 
           if (text && isSensitive(text)) {
@@ -1191,6 +1265,16 @@ Message: "${text.substring(0, 200)}"`;
           }
           responseText = responseText.replace(/\s*\[ASYNC:\s*\{[\s\S]*?\}\s*\]/gi, '').trim();
 
+          // Extract [KNOW: {...}] tags — dynamic knowledge base
+          if (this.knowledge) {
+            responseText = this.knowledge.processResponse(responseText);
+          }
+
+          // Extract [PLAN: {...}] and [STEP: {...}] tags — task planner
+          if (this.planner) {
+            responseText = this.planner.processResponse(chatId, responseText);
+          }
+
           // Extract [SPAWN: type | description] tag — background task
           const spawnRegex = /\[SPAWN:\s*(code|research|general)\s*\|\s*(.+?)\]/i;
           const spawnMatch = spawnRegex.exec(responseText);
@@ -1238,10 +1322,29 @@ Message: "${text.substring(0, 200)}"`;
           responseText = responseText.replace(/\[TOOL:\s*\w+\]\s*/gi, '').trim();
           responseText = responseText.replace(/\[\/TOOL\]\s*/gi, '').trim();
 
+          // Strip "mau lanjut?" spam — auto-continue enforcement
+          // Remove sentences asking permission to continue (AI should just do it)
+          responseText = responseText.replace(/\n*(?:^|\n).*(?:mau (?:gue |gw |aku )?(?:lanjut|lanjutin|gas|terus)|(?:lanjut|lanjutin|gas) (?:gak|ga|nggak|tidak|ngga)?[?\s]*(?:✨|🚀|💪|🔥)?|tinggal bilang[^.\n]*|mau (?:gue |gw )?(?:selesaiin|kerjain|handle)[^.\n]*\?)\s*$/gmi, '').trim();
+
+          // Mask sshpass passwords in responses
+          responseText = responseText.replace(/sshpass\s+-p\s+'[^']*'/g, "sshpass -p '***'");
+          responseText = responseText.replace(/sshpass\s+-p\s+\S+/g, "sshpass -p ***");
+
           // Mask any accidentally leaked credentials in response
           responseText = responseText.replace(/\b(sk-[A-Za-z0-9_-]{10,})\b/g, (m) => m.substring(0, 7) + '...[masked]');
           responseText = responseText.replace(/\b(AIza[A-Za-z0-9_-]{10,})\b/g, (m) => m.substring(0, 7) + '...[masked]');
           responseText = responseText.replace(/((?:API_KEY|SECRET|TOKEN|PASSWORD|CONSUMER_KEY|APP_SECRET)\s*[=:]\s*)(\S{8,})/gi, (m, prefix, val) => prefix + val.substring(0, 4) + '...[masked]');
+
+          // Hard limit: strip long encoded/cert/key blocks from response
+          // Catches base64 blobs, PEM certificates, CSRs, etc.
+          responseText = responseText.replace(/-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g, '[content saved to file — not shown in chat]');
+          // Strip any remaining base64-like blocks (40+ chars of base64 per line, 5+ lines)
+          responseText = responseText.replace(/(?:^[A-Za-z0-9+\/=]{40,}\n){5,}/gm, '[...long encoded content truncated...]\n');
+          // Hard cap: if response > 2000 chars, truncate with notice
+          if (responseText.length > 2000) {
+            responseText = responseText.substring(0, 1900) + '\n\n...(output terlalu panjang, sisanya di-truncate)';
+            console.log(`  ✂️ Response truncated from ${responseText.length} to 2000 chars`);
+          }
 
           // Stop typing indicator before sending response
           clearInterval(typingInterval);

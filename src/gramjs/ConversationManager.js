@@ -195,9 +195,9 @@ export class ConversationManager {
     // Build optimized history
     const result = [];
 
-    // 1. Summary (if exists)
+    // 1. Summary (if exists) — contains user goals and progress
     if (chat.summary) {
-      result.push({ role: 'system', content: `[Conversation context: ${chat.summary}]` });
+      result.push({ role: 'system', content: `[User's goals and context from earlier in this conversation — follow these instructions:\n${chat.summary}]` });
     }
 
     // 2. Relevant older messages
@@ -235,41 +235,17 @@ export class ConversationManager {
     const msgs = chat.messages;
     if (msgs.length <= 10) return;
 
-    const older = msgs.slice(0, -10);
-    const kept = [];
-
-    for (const msg of older) {
-      const text = msg.content;
-      if (text.length < 10) continue;
-      if (GREETING_PATTERNS.test(text)) continue;
-      if (FILLER_PATTERNS.test(text)) continue;
-
-      // Extract key information
-      const isUser = msg.role === 'user';
-      const isImportant =
-        /[?]/.test(text) ||                    // Questions
-        /\b(file|path|env|key|url|ip)\b/i.test(text) ||  // File/config references
-        /\/[\w./]+/.test(text) ||              // Paths
-        /https?:\/\//.test(text) ||            // URLs
-        /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/.test(text) || // IPs
-        text.length > 80;                      // Substantial content
-
-      if (isImportant) {
-        // For user messages, keep more (they contain instructions)
-        const maxLen = isUser ? 150 : 100;
-        kept.push(`[${msg.role}] ${text.substring(0, maxLen)}`);
-      }
+    // Extract user goals from ALL messages
+    const goals = [];
+    for (const msg of msgs) {
+      if (msg.role !== 'user' || !msg.content || msg.content.length < 20) continue;
+      if (msg.content.startsWith('Tool results:') || msg.content.startsWith('[System:')) continue;
+      if (/^(ok|iya|lanjut|betul|ya|oke|yes|go|mau)/i.test(msg.content.trim())) continue;
+      goals.push(msg.content.substring(0, 250));
     }
 
-    // Chain with existing summary
-    const newSummary = kept.join(' | ').substring(0, 600);
-    if (chat.summary && chat.summary.length > 0) {
-      // Merge: keep last part of old summary + new
-      const oldPart = chat.summary.substring(0, 300);
-      chat.summary = `${oldPart} ||| ${newSummary}`.substring(0, 800);
-    } else {
-      chat.summary = newSummary;
-    }
+    const uniqueGoals = [...new Set(goals)];
+    chat.summary = uniqueGoals.map(g => `[GOAL] ${g}`).join('\n').substring(0, 1200);
   }
 
   _compactHistory(chatId) {
@@ -280,41 +256,41 @@ export class ConversationManager {
     const oldest = chat.messages.slice(0, -keepCount);
     const recent = chat.messages.slice(-keepCount);
 
-    // Build meaningful summary from compacted messages
-    const keyParts = [];
-    for (const msg of oldest) {
-      if (!msg.content || msg.content.length < 15) continue;
-      if (msg.role === 'system') continue;
-
+    // Build clean summary — prioritize USER GOALS over everything else
+    // Step 1: Extract real user instructions (not tool results, not system messages)
+    const userInstructions = [];
+    const keyResults = [];
+    
+    // Also scan ALL messages (including recent) for the original task/goal
+    const allMsgs = [...oldest, ...recent];
+    for (const msg of allMsgs) {
+      if (!msg.content || msg.content.length < 10) continue;
       const text = msg.content;
-
-      // Extract user instructions/requests (most important)
+      
       if (msg.role === 'user') {
-        // Skip pure tool results forwarded as user
-        if (text.startsWith('Tool results:')) {
-          // Extract just the key findings
-          const shortResult = text.substring(0, 100).replace(/\n/g, ' ');
-          keyParts.push(`[tool-output] ${shortResult}`);
-          continue;
-        }
-        keyParts.push(`[user] ${text.substring(0, 200)}`);
-      } else if (msg.role === 'assistant') {
-        // Keep assistant conclusions (first line usually has the answer)
-        const firstLine = text.split('\n')[0].substring(0, 150);
-        if (firstLine.length > 20) {
-          keyParts.push(`[assistant] ${firstLine}`);
+        // Skip tool results forwarded as user
+        if (text.startsWith('Tool results:') || text.startsWith('[System:') || text.startsWith('[Async task')) continue;
+        // Skip very short acks
+        if (text.length < 20 && /^(ok|iya|lanjut|betul|ya|oke|yes|go|mau)/i.test(text)) continue;
+        // This is a real user instruction
+        userInstructions.push(text.substring(0, 250));
+      } else if (msg.role === 'assistant' && !text.startsWith('[TOOL:')) {
+        // Keep key conclusions only (first meaningful line)
+        const firstLine = text.split('\n')[0].substring(0, 100);
+        if (firstLine.length > 30 && !/^(Oke|Ok |Baik|Tunggu|Lagi )/.test(firstLine)) {
+          keyResults.push(firstLine);
         }
       }
     }
-
-    const summary = keyParts.join(' | ').substring(0, 1000) || 'Earlier conversation context';
-
-    // Chain with existing summary
-    if (chat.summary) {
-      chat.summary = `${chat.summary.substring(0, 400)} ||| Compacted: ${summary}`.substring(0, 1200);
-    } else {
-      chat.summary = summary;
-    }
+    
+    // Step 2: Build summary — user goals FIRST, then key results
+    // Deduplicate user instructions (keep unique ones)
+    const uniqueInstructions = [...new Set(userInstructions)];
+    const goalSection = uniqueInstructions.map(i => `[GOAL] ${i}`).join('\n').substring(0, 1200);
+    const resultSection = keyResults.slice(-5).join(' | ').substring(0, 400);
+    
+    // Step 3: REPLACE summary entirely (no chaining — prevents nested garbage)
+    chat.summary = `${goalSection}\n[PROGRESS] ${resultSection}`.substring(0, 1600);
 
     chat.messages = recent;
     console.log(`📦 Compacted chat ${chatId}: ${oldest.length + recent.length} → ${recent.length} msgs (summary: ${chat.summary.length} chars)`);
