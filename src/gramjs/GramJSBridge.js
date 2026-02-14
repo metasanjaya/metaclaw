@@ -120,7 +120,8 @@ export class GramJSBridge {
         }, 6000);
         try {
           this.conversationMgr.addMessage(chatId, 'user', `[Scheduled task] ${prompt}`);
-          const { responseText } = await this._processWithTools(chatId, systemPrompt, null, 3, prompt);
+          const maxRounds = this.config.tools?.max_rounds || 20;
+          const { responseText } = await this._processWithTools(chatId, systemPrompt, null, maxRounds, prompt);
           clearInterval(typingInterval);
           if (responseText) {
             this.conversationMgr.addMessage(chatId, 'assistant', responseText);
@@ -890,7 +891,11 @@ Message: "${text.substring(0, 200)}"`;
       console.log(`  🔄 Tool round ${round + 1}/${maxRounds}`);
     }
 
-    // Final generation after exhausting rounds
+    // Max rounds exhausted — ask AI to summarize progress and ask user for next steps
+    console.log(`  ⚠️ Max tool rounds (${maxRounds}) exhausted — requesting summary`);
+    if (this.conversationMgr) {
+      this.conversationMgr.addMessage(chatId, 'user', `[System: Max tool rounds (${maxRounds}) reached. Berikan ringkasan progress sejauh ini ke user, apa yang sudah selesai, apa yang belum, dan tanya user mau lanjut yang mana atau ada instruksi lain. JANGAN pakai tools lagi.]`);
+    }
     const final = await this._callAIWithHistory(chatId, systemPrompt, null, currentQuery);
     return { responseText: final?.text || final?.content || String(final), tokensUsed: totalTokens + (final.tokensUsed || 0) };
   }
@@ -1067,8 +1072,9 @@ Message: "${text.substring(0, 200)}"`;
           }
 
           // Process with timeout protection (90 seconds max)
+          const maxRounds = this.config.tools?.max_rounds || 20;
           const processPromise = this._processWithTools(
-            chatId, systemPrompt, imagePath, 3, text || 'image analysis'
+            chatId, systemPrompt, imagePath, maxRounds, text || 'image analysis'
           );
           const timeoutPromise = new Promise((_, reject) =>
             setTimeout(() => reject(new Error('Processing timeout (180s)')), 180000)
