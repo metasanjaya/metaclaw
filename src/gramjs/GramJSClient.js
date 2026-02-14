@@ -413,17 +413,40 @@ export class GramJSClient {
 
   async sendMessage(chatId, text, replyTo = null) {
     try {
-      const params = { message: text };
-      if (replyTo) params.replyTo = replyTo;
-      await this.client.sendMessage(chatId, params);
-      console.log(`📤 Sent response to ${chatId}`);
+      // Telegram limit: 4096 chars per message — split if needed
+      const MAX_LEN = 4000; // slightly under limit for safety
+      const parts = [];
+      let remaining = text;
+      while (remaining.length > 0) {
+        if (remaining.length <= MAX_LEN) {
+          parts.push(remaining);
+          break;
+        }
+        // Try to split at newline near the limit
+        let splitIdx = remaining.lastIndexOf('\n', MAX_LEN);
+        if (splitIdx < MAX_LEN * 0.5) splitIdx = MAX_LEN; // no good newline, hard split
+        parts.push(remaining.substring(0, splitIdx));
+        remaining = remaining.substring(splitIdx).trimStart();
+      }
+
+      for (let i = 0; i < parts.length; i++) {
+        const params = { message: parts[i] };
+        // Only reply to original on first part
+        if (replyTo && i === 0) params.replyTo = replyTo;
+        await this.client.sendMessage(chatId, params);
+        // Small delay between parts to avoid flood
+        if (i < parts.length - 1) await new Promise(r => setTimeout(r, 500));
+      }
+      console.log(`📤 Sent response to ${chatId}${parts.length > 1 ? ` (${parts.length} parts)` : ''}`);
     } catch (err) {
       console.error(`❌ Failed to send to ${chatId}:`, err.message);
       // Handle flood wait
       if (err.seconds) {
         console.log(`⏳ Flood wait: ${err.seconds}s`);
         await new Promise(r => setTimeout(r, err.seconds * 1000 + 1000));
-        await this.client.sendMessage(chatId, { message: text, replyTo });
+        try {
+          await this.client.sendMessage(chatId, { message: text.substring(0, 4000), replyTo });
+        } catch {}
       }
     }
   }

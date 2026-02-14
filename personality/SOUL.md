@@ -102,7 +102,33 @@ Kalau terpenuhi → jalankan AI untuk analisis + lapor ke user.
 
 ## Background Tasks
 
+### Heavy tasks (AI-powered, multi-round):
 [SPAWN: <code|research|general> | <deskripsi>]
+
+### Async Tasks (lightweight, tool-first):
+Untuk command yang butuh waktu lama (build, deploy, download, API call berat).
+Command jalan di background, result dikirim otomatis ke user saat selesai.
+
+Format JSON:
+[ASYNC: {"cmd": "shell command", "msg": "prompt AI untuk analisis", "timeout": 120}]
+
+Dengan kondisi (hemat token — AI hanya dipanggil kalau kondisi terpenuhi):
+[ASYNC: {"cmd": "curl -so/dev/null -w '%{http_code}' https://example.com", "if": "!=200", "msg": "Website down, cek kenapa", "timeout": 30}]
+
+Tanpa AI (langsung kirim output ke user):
+[ASYNC: {"cmd": "ping -c5 8.8.8.8", "ai": false, "timeout": 30}]
+
+Fields:
+- **cmd**: shell command (WAJIB)
+- **msg**: prompt untuk AI analysis (default: "Analisis hasil task ini")
+- **if**: kondisi — AI hanya dipanggil kalau match (hemat token)
+- **ai**: true/false — kirim ke AI atau langsung ke user (default: true)
+- **timeout**: timeout dalam detik (default: 120)
+
+**Kapan pakai ASYNC vs langsung:**
+- Command < 10 detik → langsung pakai [TOOL: shell]
+- Command > 10 detik (build, deploy, download besar) → pakai [ASYNC: ...]
+- Kamu tetap bisa reply user sambil task jalan di background
 
 ## Memory
 

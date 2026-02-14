@@ -14,6 +14,7 @@ import { ToolExecutor } from './ToolExecutor.js';
 import { Scheduler } from './Scheduler.js';
 import { ChatQueue } from './ChatQueue.js';
 import { TaskRunner } from './TaskRunner.js';
+import { AsyncTaskManager } from './AsyncTaskManager.js';
 import { ConversationManager } from './ConversationManager.js';
 import fs from 'fs';
 import path from 'path';
@@ -174,6 +175,33 @@ export class GramJSBridge {
     );
 
     // Concurrent chat queue
+    // Async task manager (lightweight background tasks)
+    this.asyncTasks = new AsyncTaskManager(
+      async (peerId, message, replyTo) => {
+        await this.gram.sendMessage(peerId, message, replyTo);
+      },
+      // Agent function for AI analysis of results
+      async (peerId, chatId, prompt) => {
+        const systemPrompt = await this._buildSystemPrompt(prompt);
+        await this.gram.setTyping(peerId);
+        const typingInterval = setInterval(() => {
+          this.gram.setTyping(peerId).catch(() => {});
+        }, 6000);
+        try {
+          this.conversationMgr.addMessage(chatId, 'user', `[Async task result] ${prompt}`);
+          const { responseText } = await this._callAIWithHistory(chatId, systemPrompt, null, prompt);
+          clearInterval(typingInterval);
+          if (responseText) {
+            this.conversationMgr.addMessage(chatId, 'assistant', responseText);
+            await this.gram.sendMessage(peerId, responseText);
+          }
+        } catch (e) {
+          clearInterval(typingInterval);
+          throw e;
+        }
+      }
+    );
+
     this.chatQueue = new ChatQueue();
 
     // Track last file per chat (for when file and text come as separate messages)
@@ -840,6 +868,7 @@ Message: "${text.substring(0, 200)}"`;
 
     // Start persistent scheduler
     this.scheduler.start();
+    this.asyncTasks.start();
 
     this.gram.onMessage(async (msg) => {
       let text = (msg.text || '').trim();
@@ -998,12 +1027,24 @@ Message: "${text.substring(0, 200)}"`;
             } catch {}
           }
 
-          const { responseText: rawResponse, tokensUsed } = await this._processWithTools(
+          // Process with timeout protection (90 seconds max)
+          const processPromise = this._processWithTools(
             chatId, systemPrompt, imagePath, 3, text || 'image analysis'
           );
+          const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Processing timeout (90s)')), 90000)
+          );
+          const { responseText: rawResponse, tokensUsed } = await Promise.race([processPromise, timeoutPromise])
+            .catch(err => {
+              console.error(`⚠️ Process error: ${err.message}`);
+              return { responseText: `⚠️ Proses timeout atau gagal: ${err.message}. Coba lagi ya!`, tokensUsed: 0 };
+            });
 
           let responseText = rawResponse;
-          if (!responseText) return;
+          if (!responseText) {
+            console.warn('⚠️ Empty response from AI — sending fallback');
+            responseText = 'Hmm, kayaknya proses tadi gagal atau hasilnya kosong. Coba ulangi atau kasih detail lebih ya 🤔';
+          }
 
           // Extract [REMEMBER:] tags
           const rememberRegex = /\[REMEMBER:\s*(.+?)\]/gi;
@@ -1074,6 +1115,30 @@ Message: "${text.substring(0, 200)}"`;
             }
           }
           responseText = responseText.replace(/\s*\[SCHEDULE:\s*(?:\{[\s\S]*?\}|[^\]]*?)\]/gi, '').trim();
+
+          // Extract [ASYNC: {...}] tags — lightweight background tasks
+          const asyncJsonRegex = /\[ASYNC:\s*(\{[\s\S]*?\})\s*\]/gi;
+          let asyncMatch;
+          while ((asyncMatch = asyncJsonRegex.exec(responseText)) !== null) {
+            try {
+              const spec = JSON.parse(asyncMatch[1]);
+              if (spec.cmd) {
+                const taskId = this.asyncTasks.add({
+                  peerId: String(peerId), chatId,
+                  cmd: spec.cmd,
+                  msg: spec.msg || 'Analisis hasil task ini',
+                  if: spec.if || null,
+                  aiAnalysis: spec.ai !== false, // default true
+                  replyTo: msg.message.id,
+                  timeout: (spec.timeout || 120) * 1000,
+                });
+                console.log(`  ⚡ Async task created: [${taskId}] ${spec.cmd.substring(0, 60)}`);
+              }
+            } catch (e) {
+              console.warn(`  ⚠️ Invalid ASYNC JSON: ${e.message}`);
+            }
+          }
+          responseText = responseText.replace(/\s*\[ASYNC:\s*\{[\s\S]*?\}\s*\]/gi, '').trim();
 
           // Extract [SPAWN: type | description] tag — background task
           const spawnRegex = /\[SPAWN:\s*(code|research|general)\s*\|\s*(.+?)\]/i;
