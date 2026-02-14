@@ -1117,6 +1117,16 @@ Message: "${text.substring(0, 200)}"`;
           }
           responseText = responseText.replace(/\s*\[VOICE:\s*.+?\]/gi, '').trim();
 
+          // Strip any leaked tool tags from response
+          responseText = responseText.replace(/\[TOOL:\s*\w+\][\s\S]*?\[\/TOOL\]/gi, '').trim();
+          responseText = responseText.replace(/\[TOOL:\s*\w+\]\s*/gi, '').trim();
+          responseText = responseText.replace(/\[\/TOOL\]\s*/gi, '').trim();
+
+          // Mask any accidentally leaked credentials in response
+          responseText = responseText.replace(/\b(sk-[A-Za-z0-9_-]{10,})\b/g, (m) => m.substring(0, 7) + '...[masked]');
+          responseText = responseText.replace(/\b(AIza[A-Za-z0-9_-]{10,})\b/g, (m) => m.substring(0, 7) + '...[masked]');
+          responseText = responseText.replace(/((?:API_KEY|SECRET|TOKEN|PASSWORD|CONSUMER_KEY|APP_SECRET)\s*[=:]\s*)(\S{8,})/gi, (m, prefix, val) => prefix + val.substring(0, 4) + '...[masked]');
+
           // Stop typing indicator before sending response
           clearInterval(typingInterval);
 
