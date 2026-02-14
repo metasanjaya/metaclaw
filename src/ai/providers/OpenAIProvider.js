@@ -16,10 +16,14 @@ export class OpenAIProvider extends BaseProvider {
 
   async chat(messages, options = {}) {
     const { model = 'gpt-4', maxTokens = 1000, temperature = 0.7 } = options;
+    // GPT-5+ uses max_completion_tokens instead of max_tokens
+    const tokenParam = model.startsWith('gpt-5') || model.startsWith('o4') 
+      ? { max_completion_tokens: maxTokens } 
+      : { max_tokens: maxTokens };
     const completion = await this.client.chat.completions.create({
       model,
       messages,
-      max_tokens: maxTokens,
+      ...tokenParam,
       temperature,
     });
     return this._normalize(
@@ -77,12 +81,16 @@ export class OpenAIProvider extends BaseProvider {
       return msg;
     }).flat();
 
+    // GPT-5+ uses max_completion_tokens instead of max_tokens
+    const tokenParam2 = model.startsWith('gpt-5') || model.startsWith('o4')
+      ? { max_completion_tokens: maxTokens }
+      : { max_tokens: maxTokens };
     const completion = await this.client.chat.completions.create({
       model,
       messages: openaiMessages,
       tools: openaiTools,
       tool_choice: 'auto',
-      max_tokens: maxTokens,
+      ...tokenParam2,
       temperature,
     });
 
