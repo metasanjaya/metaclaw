@@ -32,6 +32,17 @@ export class Scheduler {
    * @returns {string} job id
    */
   add({ peerId, chatId, message, triggerAt, repeatMs = null, replyTo = null }) {
+    // Dedup: skip if same chat + same message + trigger within 5 minutes
+    const dominated = this.jobs.find(j =>
+      j.chatId === chatId &&
+      j.message === message &&
+      Math.abs(j.triggerAt - triggerAt) < 300_000
+    );
+    if (dominated) {
+      console.log(`  📅 Duplicate skipped: "${message}" (existing job ${dominated.id})`);
+      return dominated.id;
+    }
+
     const job = {
       id: randomUUID(),
       peerId,

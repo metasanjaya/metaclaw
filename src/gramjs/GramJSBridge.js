@@ -186,7 +186,16 @@ export class GramJSBridge {
   }
 
   async _buildSystemPrompt(userMessage) {
-    let prompt = this.corePrompt;
+    // Inject current time awareness
+    const now = new Date();
+    const wib = new Date(now.getTime() + 7 * 3600000);
+    const days = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+    const months = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+    const h = wib.getUTCHours();
+    const timeOfDay = h < 6 ? 'dini hari' : h < 11 ? 'pagi' : h < 15 ? 'siang' : h < 18 ? 'sore' : 'malam';
+    const timeStr = `${days[wib.getUTCDay()]}, ${wib.getUTCDate()} ${months[wib.getUTCMonth()]} ${wib.getUTCFullYear()} ${String(wib.getUTCHours()).padStart(2,'0')}:${String(wib.getUTCMinutes()).padStart(2,'0')} WIB (${timeOfDay})`;
+
+    let prompt = this.corePrompt + `\n\n## Waktu Sekarang\n${timeStr}\n`;
 
     // RAG: find relevant context
     if (this.rag) {
@@ -821,6 +830,7 @@ Message: "${text.substring(0, 200)}"`;
 
       // Enqueue per-chat (parallel across chats, sequential within same chat)
       this.chatQueue.enqueue(chatId, async () => {
+        let typingInterval = null;
         try {
           if (!this.conversationMgr) {
             this.conversationMgr = new ConversationManager(null);
@@ -858,7 +868,11 @@ Message: "${text.substring(0, 200)}"`;
             await this.gram.deleteMessage(peerId, msg.message.id);
           }
 
+          // Start typing indicator with interval (Telegram expires after 5s)
           await this.gram.setTyping(peerId);
+          typingInterval = setInterval(() => {
+            this.gram.setTyping(peerId).catch(() => {});
+          }, 6000);
 
           // Streaming: send placeholder, edit later
           const useStreaming = this.config.features?.streaming === true;
@@ -960,6 +974,9 @@ Message: "${text.substring(0, 200)}"`;
           }
           responseText = responseText.replace(/\s*\[VOICE:\s*.+?\]/gi, '').trim();
 
+          // Stop typing indicator before sending response
+          clearInterval(typingInterval);
+
           this.conversationMgr.addMessage(chatId, 'assistant', responseText);
 
           // Reply logic:
@@ -1024,6 +1041,7 @@ Message: "${text.substring(0, 200)}"`;
           this.stats.record(msg.senderId || msg.message.senderId, msg.senderName, tokensUsed || 0, usedCfg.model);
           console.log(`✅ Responded to ${msg.senderName} (${tokensUsed || '?'} tokens)${replyTo ? ' [reply]' : ''}`);
         } catch (err) {
+          if (typingInterval) clearInterval(typingInterval);
           console.error('❌ Bridge error:', err.message);
           try {
             await this.gram.sendMessage(peerId, '⚠️ Sorry, ada error. Coba lagi ya.', msg.message.id);
