@@ -183,6 +183,7 @@ export class GramJSBridge {
       },
       // Agent function for AI analysis of results
       async (peerId, chatId, prompt) => {
+        console.log(`  🤖 Async agentFn: analyzing result for ${chatId} (${prompt.length} chars prompt)`);
         const systemPrompt = await this._buildSystemPrompt(prompt);
         await this.gram.setTyping(peerId);
         const typingInterval = setInterval(() => {
@@ -193,11 +194,16 @@ export class GramJSBridge {
           const { responseText } = await this._callAIWithHistory(chatId, systemPrompt, null, prompt);
           clearInterval(typingInterval);
           if (responseText) {
+            console.log(`  📨 Async sending response (${responseText.length} chars)...`);
             this.conversationMgr.addMessage(chatId, 'assistant', responseText);
             await this.gram.sendMessage(peerId, responseText);
+          } else {
+            console.warn(`  ⚠️ Async agentFn: AI returned empty response`);
+            await this.gram.sendMessage(peerId, '⚡ Task selesai tapi AI gak bisa rangkum hasilnya. Coba tanya ulang ya.');
           }
         } catch (e) {
           clearInterval(typingInterval);
+          console.error(`  ❌ Async agentFn error: ${e.message}`);
           throw e;
         }
       }

@@ -162,11 +162,13 @@ export class AsyncTaskManager {
     for (const task of completed) {
       task.processed = true;
       this._save();
+      console.log(`  ⚡ Processing async task result [${task.id}]: ${task.status} (${(task.output || '').length} chars output)`);
 
       try {
         await this._processResult(task);
+        console.log(`  ✅ Async task [${task.id}] result delivered to user`);
       } catch (e) {
-        console.error(`  ❌ Async task [${task.id}] result processing failed: ${e.message}`);
+        console.error(`  ❌ Async task [${task.id}] result processing failed: ${e.message}\n${e.stack}`);
         // Still notify user of raw result
         try {
           const duration = ((task.completedAt - task.startedAt) / 1000).toFixed(1);
