@@ -14,7 +14,11 @@ import { ToolExecutor } from './ToolExecutor.js';
 import { Scheduler } from './Scheduler.js';
 import { ChatQueue } from './ChatQueue.js';
 import { TaskRunner } from './TaskRunner.js';
+import { AsyncTaskManager } from './AsyncTaskManager.js';
 import { ConversationManager } from './ConversationManager.js';
+import { TopicManager } from './TopicManager.js';
+import { KnowledgeManager } from './KnowledgeManager.js';
+import { TaskPlanner } from './TaskPlanner.js';
 import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
@@ -80,6 +84,7 @@ export class GramJSBridge {
     this.config = config;
     this.gram = gramClient;
     this.conversationMgr = null; // initialized after embedder is ready
+    this.topicMgr = new TopicManager();
 
     // Initialize AI client (default provider from complex model config)
     const defaultModel = config.models?.complex || { provider: 'google', model: 'gemini-2.5-pro' };
@@ -105,11 +110,129 @@ export class GramJSBridge {
     this.tools.setWorkspace(this.workspacePath);
 
     // Persistent scheduler (survives restarts)
-    this.scheduler = new Scheduler(async (peerId, message, replyTo) => {
-      await this.gram.sendMessage(peerId, message, replyTo);
-    });
+    this.scheduler = new Scheduler(
+      // Direct send function
+      async (peerId, message, replyTo) => {
+        await this.gram.sendMessage(peerId, message, replyTo);
+      },
+      // Agent function — route through AI pipeline
+      async (peerId, chatId, prompt) => {
+        const systemPrompt = await this._buildSystemPrompt(prompt, chatId);
+        await this.gram.setTyping(peerId);
+        const typingInterval = setInterval(() => {
+          this.gram.setTyping(peerId).catch(() => {});
+        }, 6000);
+        try {
+          this.conversationMgr.addMessage(chatId, 'user', `[Scheduled task] ${prompt}`);
+          const maxRounds = this.config.tools?.max_rounds || 20;
+          const { responseText } = await this._processWithTools(chatId, systemPrompt, null, maxRounds, prompt);
+          clearInterval(typingInterval);
+          if (responseText) {
+            this.conversationMgr.addMessage(chatId, 'assistant', responseText);
+            await this.gram.sendMessage(peerId, responseText);
+          }
+        } catch (e) {
+          clearInterval(typingInterval);
+          throw e;
+        }
+      },
+      // Check function — run command first, evaluate condition, feed to AI if triggered
+      async (peerId, chatId, command, prompt, condition) => {
+        const { execSync } = await import('child_process');
+        let cmdOutput, cmdFailed = false;
+        try {
+          cmdOutput = execSync(command, { timeout: 30000, encoding: 'utf-8', maxBuffer: 1024 * 512 }).trim();
+        } catch (e) {
+          cmdOutput = (e.stderr || e.stdout || e.message || '').trim();
+          cmdFailed = true;
+        }
+
+        // Evaluate condition — if not met, stay silent (0 tokens)
+        if (condition && !cmdFailed) {
+          const triggered = this._evaluateCondition(cmdOutput, condition);
+          if (!triggered) {
+            console.log(`  ⏭️ Check condition not met: "${condition}" (output: "${cmdOutput.substring(0, 80)}")`);
+            return; // Silent — don't call AI
+          }
+          console.log(`  ⚠️ Check condition triggered: "${condition}" (output: "${cmdOutput.substring(0, 80)}")`);
+        }
+
+        // Condition met (or no condition) → feed to AI
+        const systemPrompt = await this._buildSystemPrompt(prompt, chatId);
+        const combinedPrompt = `[Scheduled check — condition triggered]\nCommand: ${command}\nCondition: ${condition || 'none'}\nOutput:\n\`\`\`\n${cmdOutput}\n\`\`\`\n\nTask: ${prompt}`;
+        await this.gram.setTyping(peerId);
+        const typingInterval = setInterval(() => {
+          this.gram.setTyping(peerId).catch(() => {});
+        }, 6000);
+        try {
+          this.conversationMgr.addMessage(chatId, 'user', combinedPrompt);
+          const maxRounds = this.config?.tools?.max_rounds || 20;
+          const { responseText: rawSchedText } = await this._processWithTools(chatId, systemPrompt, null, maxRounds, prompt);
+          let responseText = (rawSchedText || '').replace(/\[TOOL:\s*\w+[^\]]*\][\s\S]*?\[\/TOOL\]/gi, '').replace(/\[TOOL:\s*\w+\]\s*/gi, '').replace(/\[\/TOOL\]\s*/gi, '').trim();
+          responseText = responseText.replace(/-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g, '[content saved to file]');
+          responseText = responseText.replace(/(?:^[A-Za-z0-9+\/=]{40,}\n){5,}/gm, '[...truncated...]\n');
+          if (responseText.length > 2000) responseText = responseText.substring(0, 1900) + '\n\n...(truncated)';
+          clearInterval(typingInterval);
+          if (responseText) {
+            this.conversationMgr.addMessage(chatId, 'assistant', responseText);
+            await this.gram.sendMessage(peerId, responseText);
+          }
+        } catch (e) {
+          clearInterval(typingInterval);
+          throw e;
+        }
+      }
+    );
 
     // Concurrent chat queue
+    // Async task manager (lightweight background tasks)
+    this.asyncTasks = new AsyncTaskManager(
+      async (peerId, message, replyTo) => {
+        await this.gram.sendMessage(peerId, message, replyTo);
+      },
+      // Agent function for AI analysis — ISOLATED context (no conversation history)
+      // Executes in fresh context, then injects compact summary back to main conversation
+      async (peerId, chatId, prompt) => {
+        console.log(`  🤖 Async agentFn (isolated): analyzing result for ${chatId} (${prompt.length} chars prompt)`);
+        const systemPrompt = await this._buildSystemPrompt(prompt, chatId);
+        await this.gram.setTyping(peerId);
+        const typingInterval = setInterval(() => {
+          this.gram.setTyping(peerId).catch(() => {});
+        }, 6000);
+        try {
+          const maxRounds = this.config?.tools?.max_rounds || 20;
+          const { responseText: rawText, tokensUsed } = await this._processIsolated(systemPrompt, prompt, maxRounds);
+          let responseText = (rawText || '').replace(/\[TOOL:\s*\w+[^\]]*\][\s\S]*?\[\/TOOL\]/gi, '').replace(/\[TOOL:\s*\w+\]\s*/gi, '').replace(/\[\/TOOL\]\s*/gi, '').trim();
+          // Same output sanitization as main flow
+          responseText = responseText.replace(/-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g, '[content saved to file]');
+          responseText = responseText.replace(/(?:^[A-Za-z0-9+\/=]{40,}\n){5,}/gm, '[...truncated...]\n');
+          if (responseText.length > 2000) responseText = responseText.substring(0, 1900) + '\n\n...(truncated)';
+          clearInterval(typingInterval);
+          if (responseText) {
+            console.log(`  📨 Async sending response (${responseText.length} chars)...`);
+            await this.gram.sendMessage(peerId, responseText);
+            // Inject compact summary into main conversation for continuity
+            if (this.conversationMgr) {
+              const summary = responseText.length > 300
+                ? responseText.substring(0, 297) + '...'
+                : responseText;
+              this.conversationMgr.addMessage(chatId, 'user', `[Task completed] ${prompt.substring(0, 200)}`);
+              this.conversationMgr.addMessage(chatId, 'assistant', `[Task result] ${summary}`);
+              console.log(`  📝 Injected async summary to conversation (${summary.length} chars)`);
+            }
+          } else {
+            console.warn(`  ⚠️ Async agentFn: AI returned empty, falling back to raw output`);
+            const rawPrompt = prompt.substring(0, 2000);
+            await this.gram.sendMessage(peerId, `⚡ Hasil task:\n${rawPrompt}`);
+          }
+        } catch (e) {
+          clearInterval(typingInterval);
+          console.error(`  ❌ Async agentFn error: ${e.message}`);
+          throw e;
+        }
+      }
+    );
+
     this.chatQueue = new ChatQueue();
 
     // Track last file per chat (for when file and text come as separate messages)
@@ -124,6 +247,8 @@ export class GramJSBridge {
     // Memory & RAG (initialized async in start())
     this.memory = new MemoryManager();
     this.rag = null;
+    this.knowledge = new KnowledgeManager();
+    this.planner = new TaskPlanner();
 
     console.log(`🧬 Core personality loaded (${this.corePrompt.length} chars)`);
     console.log('🌉 GramJS Bridge initialized (Google Gemini 2.5 Pro)');
@@ -185,8 +310,76 @@ export class GramJSBridge {
     }
   }
 
-  async _buildSystemPrompt(userMessage) {
-    let prompt = this.corePrompt;
+  /**
+   * Evaluate a condition against command output
+   * Supports: ==, !=, >, <, >=, <=, contains:, !contains:
+   * For numeric comparisons, uses first number found in output
+   */
+  _evaluateCondition(output, condition) {
+    const cond = condition.trim();
+    const outputTrimmed = output.trim();
+
+    // contains / !contains
+    if (cond.startsWith('!contains:')) {
+      return !outputTrimmed.includes(cond.substring(10).trim());
+    }
+    if (cond.startsWith('contains:')) {
+      return outputTrimmed.includes(cond.substring(9).trim());
+    }
+
+    // Comparison operators: extract number from output for numeric comparisons
+    const numMatch = outputTrimmed.match(/([\d.]+)/);
+    const outputNum = numMatch ? parseFloat(numMatch[0]) : NaN;
+
+    if (cond.startsWith('!=')) {
+      const val = cond.substring(2).trim();
+      const valNum = parseFloat(val);
+      if (!isNaN(valNum) && !isNaN(outputNum)) return outputNum !== valNum;
+      return outputTrimmed !== val;
+    }
+    if (cond.startsWith('==')) {
+      const val = cond.substring(2).trim();
+      const valNum = parseFloat(val);
+      if (!isNaN(valNum) && !isNaN(outputNum)) return outputNum === valNum;
+      return outputTrimmed === val;
+    }
+    if (cond.startsWith('>=')) {
+      return !isNaN(outputNum) && outputNum >= parseFloat(cond.substring(2));
+    }
+    if (cond.startsWith('<=')) {
+      return !isNaN(outputNum) && outputNum <= parseFloat(cond.substring(2));
+    }
+    if (cond.startsWith('>')) {
+      return !isNaN(outputNum) && outputNum > parseFloat(cond.substring(1));
+    }
+    if (cond.startsWith('<')) {
+      return !isNaN(outputNum) && outputNum < parseFloat(cond.substring(1));
+    }
+
+    // Default: treat as not-equal check (backward compat)
+    return outputTrimmed !== cond;
+  }
+
+  async _buildSystemPrompt(userMessage, chatId = null) {
+    // Inject current time awareness
+    const now = new Date();
+    const wib = new Date(now.getTime() + 7 * 3600000);
+    const days = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+    const months = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+    const h = wib.getUTCHours();
+    const timeOfDay = h < 6 ? 'dini hari' : h < 11 ? 'pagi' : h < 15 ? 'siang' : h < 18 ? 'sore' : 'malam';
+    const timeStr = `${days[wib.getUTCDay()]}, ${wib.getUTCDate()} ${months[wib.getUTCMonth()]} ${wib.getUTCFullYear()} ${String(wib.getUTCHours()).padStart(2,'0')}:${String(wib.getUTCMinutes()).padStart(2,'0')} WIB (${timeOfDay})`;
+
+    let prompt = this.corePrompt + `\n\n## Waktu Sekarang\n${timeStr}\n`;
+
+    // Knowledge Base: inject relevant facts
+    if (this.knowledge) {
+      const kb = this.knowledge.buildContext(userMessage);
+      if (kb) {
+        prompt += kb;
+        console.log(`  🧠 Knowledge: ${this.knowledge.findRelevant(userMessage).length} facts injected`);
+      }
+    }
 
     // RAG: find relevant context
     if (this.rag) {
@@ -203,6 +396,18 @@ export class GramJSBridge {
       } catch (err) {
         console.warn('  ⚠️ RAG search failed:', err.message);
       }
+    }
+
+    // Task Planner: inject active plan
+    if (this.planner && chatId) {
+      const planCtx = this.planner.buildContext(chatId);
+      if (planCtx) prompt += planCtx;
+    }
+
+    // Topic context: tell AI what topics are active
+    if (this.topicMgr && chatId) {
+      const topicHint = this.topicMgr.getContextHint(chatId);
+      if (topicHint) prompt += `\n\n## Conversation Topics\n${topicHint}\n`;
     }
 
     return prompt;
@@ -506,65 +711,302 @@ Message: "${text.substring(0, 200)}"`;
     }
   }
 
-  _parseToolCalls(text) {
-    const regex = /\[TOOL:\s*(shell|search|fetch|read|write|ls|image)(?:\s+path=([^\]]*))?\]\s*([\s\S]*?)\s*\[\/TOOL\]/gi;
-    const calls = [];
-    let match;
-    while ((match = regex.exec(text)) !== null) {
-      calls.push({ type: match[1].toLowerCase(), pathArg: match[2]?.trim(), content: match[3].trim() });
-    }
-    return calls;
-  }
-
-  async _executeToolCalls(toolCalls, imagePath) {
-    const results = [];
-    for (const call of toolCalls) {
-      let result;
-      try {
-        switch (call.type) {
-          case 'shell':
-            result = await this.tools.execShell(call.content);
-            result = result.stdout + (result.stderr ? `\nSTDERR: ${result.stderr}` : '');
-            break;
-          case 'search':
-            const searchResults = await this.tools.webSearch(call.content);
-            result = searchResults.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`).join('\n\n');
-            break;
-          case 'fetch':
-            const fetched = await this.tools.webFetch(call.content);
-            result = `Title: ${fetched.title}\n\n${fetched.content}`;
-            break;
-          case 'read':
-            result = await this.tools.readFile(call.content);
-            break;
-          case 'write':
-            result = await this.tools.writeFile(call.pathArg || call.content, call.pathArg ? call.content : '');
-            break;
-          case 'ls':
-            result = await this.tools.listDir(call.content);
-            break;
-          case 'image':
-            if (imagePath) {
-              const analysis = await this.tools.analyzeImage(imagePath, call.content);
-              result = analysis.description;
-            } else {
-              result = 'No image available to analyze';
-            }
-            break;
+  _getToolDefinitions() {
+    return [
+      {
+        name: "shell",
+        description: "Execute a shell command on the server",
+        params: {
+          command: { type: "string", description: "Shell command to execute" }
         }
-      } catch (err) {
-        result = `Error: ${err.message}`;
+      },
+      {
+        name: "search",
+        description: "Search the web",
+        params: {
+          query: { type: "string", description: "Search query" }
+        }
+      },
+      {
+        name: "fetch",
+        description: "Fetch webpage content",
+        params: {
+          url: { type: "string", description: "URL to fetch" }
+        }
+      },
+      {
+        name: "read",
+        description: "Read a file",
+        params: {
+          path: { type: "string", description: "File path to read" }
+        }
+      },
+      {
+        name: "write",
+        description: "Write content to a file",
+        params: {
+          path: { type: "string", description: "File path" },
+          content: { type: "string", description: "File content" }
+        }
+      },
+      {
+        name: "ls",
+        description: "List directory contents",
+        params: {
+          path: { type: "string", description: "Directory path" }
+        }
+      },
+      {
+        name: "image",
+        description: "Analyze an attached image",
+        params: {
+          prompt: { type: "string", description: "What to analyze in the image" }
+        }
       }
-      results.push({ type: call.type, result: result || '(empty)' });
-      console.log(`  🔧 Tool [${call.type}]: ${(result || '').substring(0, 80)}`);
-    }
-    return results;
+    ];
   }
 
-  _classifyComplexity(text) {
+  // _parseToolCalls method removed - now using native function calling
+
+  // Patterns that indicate long-running commands (>10s expected)
+  _isLongRunningCmd(cmd) {
+    const patterns = [
+      /\bsleep\s+\d{2,}/i,          // sleep 30+
+      /\bapt\s+(install|update|upgrade)/i,
+      /\bnpm\s+(install|run\s+build|ci)/i,
+      /\byarn\s+(install|build)/i,
+      /\bpip\s+install/i,
+      /\bgit\s+(clone|pull)/i,
+      /\bdocker\s+(build|pull|push)/i,
+      /\bcurl\s+.*&&\s*sleep/i,      // curl + sleep combo
+      /\bwget\s+/i,
+      /\bmake\b/i,
+      /\bcargo\s+build/i,
+      /\brsync\b/i,
+      /\bscp\b/i,
+      /\bdd\s+/i,
+      /\btar\s+.*[xc]z?f/i,          // tar extract/create
+    ];
+    return patterns.some(p => p.test(cmd));
+  }
+
+  async _callAIWithTools(chatId, systemPrompt, tools, currentQuery) {
+    // Build optimized conversation history for the AI (topic-aware)
+    const activeTopic = this.topicMgr ? this.topicMgr.getActiveTopic(chatId) : null;
+    let history;
+    if (this.conversationMgr && currentQuery) {
+      history = await this.conversationMgr.getOptimizedHistory(chatId, currentQuery, activeTopic);
+    } else if (this.conversationMgr) {
+      history = this.conversationMgr.getRawHistory(chatId);
+    } else {
+      history = [];
+    }
+
+    // Ensure first non-system message is 'user' role
+    const firstNonSystemIdx = history.findIndex(m => m.role !== 'system');
+    if (firstNonSystemIdx !== -1 && history[firstNonSystemIdx].role === 'assistant') {
+      // Skip assistant messages at the start until we find a user message
+      let skipUntil = firstNonSystemIdx;
+      while (skipUntil < history.length && history[skipUntil].role !== 'user') {
+        skipUntil++;
+      }
+      if (skipUntil < history.length) {
+        history = [...history.slice(0, firstNonSystemIdx), ...history.slice(skipUntil)];
+      } else {
+        // No user messages at all — prepend synthetic one
+        history = [{ role: 'user', content: '(continued conversation)' }, ...history];
+      }
+    }
+
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      ...history,
+    ];
+
+    // Smart model routing based on complexity
+    const complexity = this._classifyComplexity(currentQuery || messages[messages.length - 1]?.content, chatId);
+    let providerName, modelName;
+    const modelCfg = complexity === 'simple'
+      ? this.config.models?.simple || { provider: 'google', model: 'gemini-2.5-flash' }
+      : this.config.models?.complex || { provider: 'google', model: 'gemini-2.5-pro' };
+    providerName = modelCfg.provider;
+    modelName = modelCfg.model;
+
+    // Dynamic maxTokens based on complexity
+    const maxTokens = complexity === 'complex' ? 8192 : 2048;
+    console.log(`  🧠 Routing: ${complexity} → ${providerName}/${modelName} (maxTokens: ${maxTokens})`);
+
+    // Call AI with tools
+    try {
+      const result = await this.ai.chatWithTools(messages, tools, {
+        provider: providerName,
+        model: modelName,
+        maxTokens,
+        temperature: 0.7
+      });
+
+      // Track token usage
+      const tokensUsed = result.tokensUsed || 0;
+      // Stats tracking handled in main message handler via this.stats.record()
+      
+      // Track daily usage by model
+      const dayKey = new Date().toISOString().split('T')[0];
+      if (!this.costTracker[modelName]) {
+        this.costTracker[modelName] = { total: 0, daily: {} };
+      }
+      this.costTracker[modelName].total += tokensUsed;
+      this.costTracker[modelName].daily[dayKey] = (this.costTracker[modelName].daily[dayKey] || 0) + tokensUsed;
+
+      return result;
+    } catch (error) {
+      console.error(`❌ AI call failed: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async _executeSingleTool(toolName, toolInput, imagePath) {
+    try {
+      switch (toolName) {
+        case 'shell':
+          const cmd = toolInput.command;
+          // Auto-detect long-running commands → run async
+          if (this._isLongRunningCmd(cmd) && this.asyncTasks) {
+            const taskId = this.asyncTasks.add({
+              peerId: this._currentPeerId,
+              chatId: this._currentChatId,
+              cmd: cmd,
+              msg: 'Analisis dan rangkum hasil command ini',
+              timeout: 300000, // 5 min for long tasks
+            });
+            const safeLog = cmd.replace(/sshpass\s+-p\s+'[^']*'/g, "sshpass -p '***'")
+                              .replace(/sshpass\s+-p\s+\S+/g, "sshpass -p ***")
+                              .substring(0, 60);
+            console.log(`  ⚡ Auto-async: "${safeLog}" → task ${taskId}`);
+            return `⚡ Command berjalan di background (task ${taskId}). Hasil akan dikirim otomatis setelah selesai.`;
+          } else {
+            const result = await this.tools.execShell(cmd);
+            return result.stdout + (result.stderr ? `\nSTDERR: ${result.stderr}` : '');
+          }
+        
+        case 'search':
+          const searchResults = await this.tools.webSearch(toolInput.query);
+          return searchResults.map((r, i) => 
+            `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`
+          ).join('\n\n');
+        
+        case 'fetch':
+          const fetched = await this.tools.webFetch(toolInput.url);
+          return `Title: ${fetched.title}\n\n${fetched.content}`;
+        
+        case 'read':
+          return await this.tools.readFile(toolInput.path);
+        
+        case 'write':
+          return await this.tools.writeFile(toolInput.path, toolInput.content);
+        
+        case 'ls':
+          return await this.tools.listDir(toolInput.path);
+        
+        case 'image':
+          if (imagePath) {
+            const analysis = await this.tools.analyzeImage(imagePath, toolInput.prompt || '');
+            return analysis.description;
+          } else {
+            return 'No image available to analyze';
+          }
+        
+        default:
+          return `Unknown tool: ${toolName}`;
+      }
+    } catch (error) {
+      const msg = error.message || String(error);
+      // Mask sensitive data in error messages
+      const maskedPatterns = [
+        [/\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/g, '[MASKED_CREDENTIAL]'],
+        [/\bAIza[A-Za-z0-9_-]{33,}\b/g, '[API_KEY]'],
+        [/\bsk-[A-Za-z0-9_-]{20,}\b/g, '[TOKEN]'],
+        [/\bpassword\s*[:=]\s*\S+/ig, 'password=[MASKED]'],
+        [/\bapi[_-]?key\s*[:=]\s*\S+/ig, 'api_key=[MASKED]']
+      ];
+      
+      let masked = msg;
+      for (const [pattern, replacement] of maskedPatterns) {
+        masked = masked.replace(pattern, replacement);
+      }
+      return masked;
+    }
+  }
+
+  _addToolRoundToHistory(chatId, aiResponse, toolResults) {
+    if (!this.conversationMgr) return;
+
+    // Add assistant message with text (if any) - tool calls are internal
+    const activeTopic = this.topicMgr ? this.topicMgr.getActiveTopic(chatId) : null;
+    if (aiResponse.text && aiResponse.text.trim()) {
+      this.conversationMgr.addMessage(chatId, 'assistant', aiResponse.text, activeTopic);
+    }
+
+    // Format tool results as readable text for history
+    const toolOutputs = [];
+    for (const tr of toolResults) {
+      const tc = aiResponse.toolCalls.find(t => t.id === tr.id);
+      if (tc) {
+        toolOutputs.push(`[${tc.name}]:\n${tr.result}`);
+      }
+    }
+    
+    if (toolOutputs.length > 0) {
+      const resultsText = `Tool results:\n${toolOutputs.join('\n\n')}`;
+      this.conversationMgr.addMessage(chatId, 'user', resultsText, activeTopic);
+    }
+  }
+
+  // _executeToolCalls method removed - now using _executeSingleTool with native function calling
+
+  /**
+   * Detect if AI response promises to do something without actually doing it.
+   * Returns true if the text contains "will do" patterns (aku cari, tunggu, aku cek, etc.)
+   */
+  _detectUnfulfilledPromise(text) {
+    if (!text || text.length > 500) return false; // long responses are likely complete answers
+    const lower = text.toLowerCase();
+    const promisePatterns = [
+      /aku (cari|cek|lihat|search|check|look|fetch|ambil|cobain|test|coba)/,
+      /aku akan (cari|cek|lihat|search|check|look|fetch|ambil)/,
+      /let me (search|check|look|find|try|fetch|get)/,
+      /i('ll| will) (search|check|look|find|try|fetch|get)/,
+      /tunggu.*ya/,
+      /wait.*moment/,
+      /sebentar/,
+      /cari (lagi|dulu|info|data)/,
+      /cek (lagi|dulu|ulang)/,
+    ];
+    return promisePatterns.some(p => p.test(lower));
+  }
+
+  _classifyComplexity(text, chatId = null) {
     if (!text) return 'simple';
     const words = text.trim().split(/\s+/);
     const lower = text.toLowerCase();
+
+    // Continuation keywords — if user says "lanjut"/"gas"/"oke"/"test", they're continuing a complex task
+    const continueKeywords = ['lanjut', 'lanjutin', 'gas', 'terus', 'next', 'continue', 'oke lanjut', 'go', 'yuk'];
+    const isContinuation = words.length <= 5 && continueKeywords.some(kw => lower.includes(kw));
+
+    // If there's an active plan for this chat → always complex (task in progress)
+    if (chatId && this.taskPlanner) {
+      const activePlan = this.taskPlanner.getActive(chatId);
+      if (activePlan) return 'complex';
+    }
+
+    // If continuation AND recent history has complex work → complex
+    if (isContinuation && chatId && this.conversationMgr) {
+      const recent = this.conversationMgr.getRawHistory(chatId).slice(-5);
+      const recentText = recent.map(m => m.content).join(' ').toLowerCase();
+      const hasComplexContext = ['ssh', 'nginx', 'ssl', 'cert', 'server', 'deploy', 'install', 'config', 'error', 'failed'].some(kw => recentText.includes(kw));
+      if (hasComplexContext) return 'complex';
+    }
+
     const codeKeywords = ['function', 'error', 'bug', 'deploy', 'server', 'database', 'api', 'regex', 'config', 'docker', 'git', 'npm', 'build', 'compile', 'debug', 'code', 'script', 'install', 'package', 'module', 'import', 'export', 'class', 'async', 'await', 'promise', 'callback', 'middleware', 'endpoint', 'query', 'schema', 'migration', 'terraform', 'kubernetes', 'nginx', 'systemctl', 'ssh', 'curl', 'wget'];
     const hasCodeKeyword = codeKeywords.some(kw => lower.includes(kw));
     if (words.length < 10 && !hasCodeKeyword) return 'simple';
@@ -574,10 +1016,11 @@ Message: "${text.substring(0, 200)}"`;
   }
 
   async _callAIWithHistory(chatId, systemPrompt, extraUserMsg = null, currentQuery = null) {
-    // Build optimized conversation history for the AI
+    // Build optimized conversation history for the AI (topic-aware)
+    const activeTopic = this.topicMgr ? this.topicMgr.getActiveTopic(chatId) : null;
     let history;
     if (this.conversationMgr && currentQuery) {
-      history = await this.conversationMgr.getOptimizedHistory(chatId, currentQuery);
+      history = await this.conversationMgr.getOptimizedHistory(chatId, currentQuery, activeTopic);
     } else if (this.conversationMgr) {
       history = this.conversationMgr.getRawHistory(chatId);
     } else {
@@ -609,7 +1052,7 @@ Message: "${text.substring(0, 200)}"`;
     }
 
     // Smart model routing based on complexity
-    const complexity = this._classifyComplexity(currentQuery || extraUserMsg);
+    const complexity = this._classifyComplexity(currentQuery || extraUserMsg, chatId);
     let providerName, modelName;
     const modelCfg = complexity === 'simple'
       ? this.config.models?.simple || { provider: 'google', model: 'gemini-2.5-flash' }
@@ -617,14 +1060,16 @@ Message: "${text.substring(0, 200)}"`;
     providerName = modelCfg.provider;
     modelName = modelCfg.model;
 
-    console.log(`  🧠 Routing: ${complexity} → ${providerName}/${modelName}`);
+    // Dynamic maxTokens based on complexity
+    const maxTokens = complexity === 'complex' ? 8192 : 2048;
+    console.log(`  🧠 Routing: ${complexity} → ${providerName}/${modelName} (maxTokens: ${maxTokens})`);
 
     // Try primary with retry, then fallback
     const callProvider = async (pName, mName) => {
       const provider = this.ai._getProvider(pName);
       const result = await provider.chat(messages, {
         model: mName,
-        maxTokens: 1500,
+        maxTokens,
         temperature: 0.7,
       });
       return result;
@@ -667,6 +1112,74 @@ Message: "${text.substring(0, 200)}"`;
     }
   }
 
+  /**
+   * Process a task in isolated context — no conversation history, just system prompt + task.
+   * Used by AsyncTaskManager for token-efficient background tasks.
+   */
+  async _processIsolated(systemPrompt, taskPrompt, maxRounds = 10) {
+    const tools = this._getToolDefinitions();
+    let totalTokens = 0;
+
+    // Isolated message history — starts fresh with just the task
+    const isolatedHistory = [
+      { role: 'user', content: taskPrompt },
+    ];
+
+    // Smart complexity detection — same as main flow
+    const complexity = this._classifyComplexity(taskPrompt);
+    const modelCfg = complexity === 'simple'
+      ? this.config.models?.simple || { provider: 'google', model: 'gemini-2.5-flash' }
+      : this.config.models?.complex || { provider: 'google', model: 'gemini-2.5-pro' };
+    const maxTokens = complexity === 'complex' ? 8192 : 4096;
+    console.log(`  🔒 Isolated processing [${complexity}]: ${modelCfg.provider}/${modelCfg.model}`);
+
+    for (let round = 0; round < maxRounds; round++) {
+      const messages = [
+        { role: 'system', content: systemPrompt },
+        ...isolatedHistory,
+      ];
+
+      const result = await this.ai.chatWithTools(messages, tools, {
+        provider: modelCfg.provider,
+        model: modelCfg.model,
+        maxTokens,
+        temperature: 0.7,
+      });
+      totalTokens += result.tokensUsed || 0;
+
+      if (!result.toolCalls || result.toolCalls.length === 0) {
+        return { responseText: result.text, tokensUsed: totalTokens };
+      }
+
+      // Execute tool calls
+      const toolResults = [];
+      for (const tc of result.toolCalls) {
+        const output = await this._executeSingleTool(tc.name, tc.input, null);
+        toolResults.push({ id: tc.id, result: output });
+      }
+
+      // Add tool round to isolated history (NOT to conversationMgr)
+      if (result.text) {
+        isolatedHistory.push({ role: 'assistant', content: result.text });
+      }
+      // Add tool calls as assistant message
+      const toolCallSummary = result.toolCalls.map(tc =>
+        `[Tool: ${tc.name}] ${JSON.stringify(tc.input).substring(0, 200)}`
+      ).join('\n');
+      if (!result.text) {
+        isolatedHistory.push({ role: 'assistant', content: toolCallSummary });
+      }
+      // Add tool results as user message
+      const toolResultText = toolResults.map(tr => {
+        const tc = result.toolCalls.find(t => t.id === tr.id);
+        return `[${tc?.name} result]: ${(tr.result || '').substring(0, 2000)}`;
+      }).join('\n\n');
+      isolatedHistory.push({ role: 'user', content: toolResultText });
+    }
+
+    return { responseText: '(max rounds reached)', tokensUsed: totalTokens };
+  }
+
   async _processWithTools(chatId, systemPrompt, imagePath, maxRounds = 3, currentQuery = null) {
     // If image, analyze and add to last user message in history
     if (imagePath) {
@@ -679,34 +1192,84 @@ Message: "${text.substring(0, 200)}"`;
       }
     }
 
+    const tools = this._getToolDefinitions();
     let totalTokens = 0;
+
+    let promiseRetries = 0; // track "promise to act" retries
+
     for (let round = 0; round < maxRounds; round++) {
-      const result = await this._callAIWithHistory(chatId, systemPrompt, null, currentQuery);
+      const result = await this._callAIWithTools(chatId, systemPrompt, tools, currentQuery);
       totalTokens += result.tokensUsed || 0;
 
-      let responseText = result?.text || result?.content || String(result);
-      const toolCalls = this._parseToolCalls(responseText);
-
-      if (toolCalls.length === 0) {
-        return { responseText, tokensUsed: totalTokens };
+      if (!result.toolCalls || result.toolCalls.length === 0) {
+        // Check if AI promised to do something but didn't use tools
+        if (result.text && promiseRetries < 2 && this._detectUnfulfilledPromise(result.text)) {
+          promiseRetries++;
+          console.log(`  ⚠️ AI promised action but no tool call — forcing follow-up (retry ${promiseRetries})`);
+          // Add the broken promise as context and force execution
+          this._addToolRoundToHistory(chatId, result, []);
+          if (this.conversationMgr) {
+            this.conversationMgr.addMessage(chatId, 'user',
+              `[System: Kamu bilang "${result.text.substring(0, 100)}..." tapi tidak ada tindakan. JANGAN hanya bilang akan melakukan sesuatu — LANGSUNG gunakan tool yang sesuai SEKARANG. Jika tidak bisa, jelaskan kenapa ke user.]`
+            );
+          }
+          continue; // retry the round
+        }
+        // No tool calls = AI is done, return text response
+        return { responseText: result.text, tokensUsed: totalTokens };
       }
 
-      // Execute tools
-      const toolResults = await this._executeToolCalls(toolCalls, imagePath);
-      const toolOutput = toolResults.map(r => `[${r.type}]:\n${r.result}`).join('\n\n');
+      promiseRetries = 0; // reset on successful tool use
+
+      // Execute each tool call
+      const toolResults = [];
+      for (const tc of result.toolCalls) {
+        const output = await this._executeSingleTool(tc.name, tc.input, imagePath);
+        toolResults.push({ id: tc.id, result: output });
+      }
+
+      // Format tool output for logging
+      const toolOutput = toolResults.map(tr => {
+        const tc = result.toolCalls.find(t => t.id === tr.id);
+        return `[${tc?.name}]:\n${tr.result}`;
+      }).join('\n\n');
+
+      // Detect repeated errors — if same error appears 2+ times, force stop
+      const hasPermDenied = toolOutput.includes('Permission denied');
+      const hasConnRefused = toolOutput.includes('Connection refused') || toolOutput.includes('Connection timed out');
+      const hasApiError = toolOutput.includes('"success":false') || toolOutput.includes('"success": false') || toolOutput.includes('invalid_access');
+      const hasRepeatedError = hasPermDenied || hasConnRefused || hasApiError;
+      if (hasRepeatedError) {
+        this._lastErrorType = (this._lastErrorType === 'access') ? 'access_repeat' : 'access';
+      } else {
+        this._lastErrorType = null;
+      }
 
       // Add tool interaction to conversation history
-      if (this.conversationMgr) {
-        this.conversationMgr.addMessage(chatId, 'assistant', responseText);
-        this.conversationMgr.addMessage(chatId, 'user', `Tool results:\n${toolOutput}\n\nNow give your final response to the user.`);
+      if (this._lastErrorType === 'access_repeat') {
+        // Force AI to stop retrying and ask user
+        const errorMsg = `[System: STOP. Error yang sama sudah terjadi 2x berturut-turut. JANGAN coba lagi. Langsung kasih tau user masalahnya dan tanya solusi/akses alternatif.]`;
+        this._addToolRoundToHistory(chatId, result, toolResults);
+        
+        if (this.conversationMgr) {
+          this.conversationMgr.messages[this.conversationMgr.messages.length - 1].content += `\n\n${errorMsg}`;
+        }
+        this._lastErrorType = null;
+      } else {
+        // Add normal tool round to history
+        this._addToolRoundToHistory(chatId, result, toolResults);
       }
 
       console.log(`  🔄 Tool round ${round + 1}/${maxRounds}`);
     }
 
-    // Final generation after exhausting rounds
-    const final = await this._callAIWithHistory(chatId, systemPrompt, null, currentQuery);
-    return { responseText: final?.text || final?.content || String(final), tokensUsed: totalTokens + (final.tokensUsed || 0) };
+    // Max rounds exhausted — ask AI to summarize progress and ask user for next steps
+    console.log(`  ⚠️ Max tool rounds (${maxRounds}) exhausted — requesting summary`);
+    if (this.conversationMgr) {
+      this.conversationMgr.addMessage(chatId, 'user', `[System: Max tool rounds (${maxRounds}) reached. Berikan ringkasan progress sejauh ini ke user, apa yang sudah selesai, apa yang belum, dan tanya user mau lanjut yang mana atau ada instruksi lain.]`);
+    }
+    const final = await this._callAIWithTools(chatId, systemPrompt, [], currentQuery);
+    return { responseText: final.text, tokensUsed: totalTokens + (final.tokensUsed || 0) };
   }
 
   start() {
@@ -717,6 +1280,7 @@ Message: "${text.substring(0, 200)}"`;
 
     // Start persistent scheduler
     this.scheduler.start();
+    this.asyncTasks.start();
 
     this.gram.onMessage(async (msg) => {
       let text = (msg.text || '').trim();
@@ -821,6 +1385,7 @@ Message: "${text.substring(0, 200)}"`;
 
       // Enqueue per-chat (parallel across chats, sequential within same chat)
       this.chatQueue.enqueue(chatId, async () => {
+        let typingInterval = null;
         try {
           if (!this.conversationMgr) {
             this.conversationMgr = new ConversationManager(null);
@@ -849,16 +1414,26 @@ Message: "${text.substring(0, 200)}"`;
               console.log(`  📎 File context attached: ${lastFile.name}`);
             }
           }
-          this.conversationMgr.addMessage(chatId, 'user', userContent);
+          // Classify topic for this message
+          const msgTopic = this.topicMgr.classify(chatId, text || userContent, 'user');
+          this.conversationMgr.addMessage(chatId, 'user', userContent, msgTopic);
 
-          const systemPrompt = await this._buildSystemPrompt(text || 'image analysis');
+          // Track current context for auto-async tool calls
+          this._currentPeerId = String(peerId);
+          this._currentChatId = chatId;
+
+          const systemPrompt = await this._buildSystemPrompt(text || 'image analysis', chatId);
           console.log(`🧠 Processing: "${(text || '[image]').substring(0, 60)}" from ${msg.senderName}`);
 
           if (text && isSensitive(text)) {
             await this.gram.deleteMessage(peerId, msg.message.id);
           }
 
+          // Start typing indicator with interval (Telegram expires after 5s)
           await this.gram.setTyping(peerId);
+          typingInterval = setInterval(() => {
+            this.gram.setTyping(peerId).catch(() => {});
+          }, 6000);
 
           // Streaming: send placeholder, edit later
           const useStreaming = this.config.features?.streaming === true;
@@ -870,12 +1445,25 @@ Message: "${text.substring(0, 200)}"`;
             } catch {}
           }
 
-          const { responseText: rawResponse, tokensUsed } = await this._processWithTools(
-            chatId, systemPrompt, imagePath, 3, text || 'image analysis'
+          // Process with timeout protection (90 seconds max)
+          const maxRounds = this.config.tools?.max_rounds || 20;
+          const processPromise = this._processWithTools(
+            chatId, systemPrompt, imagePath, maxRounds, text || 'image analysis'
           );
+          const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Processing timeout (180s)')), 180000)
+          );
+          const { responseText: rawResponse, tokensUsed } = await Promise.race([processPromise, timeoutPromise])
+            .catch(err => {
+              console.error(`⚠️ Process error: ${err.message}`);
+              return { responseText: `⚠️ Proses timeout atau gagal: ${err.message}. Coba lagi ya!`, tokensUsed: 0 };
+            });
 
           let responseText = rawResponse;
-          if (!responseText) return;
+          if (!responseText) {
+            console.warn('⚠️ Empty response from AI — sending fallback');
+            responseText = 'Hmm, kayaknya proses tadi gagal atau hasilnya kosong. Coba ulangi atau kasih detail lebih ya 🤔';
+          }
 
           // Extract [REMEMBER:] tags
           const rememberRegex = /\[REMEMBER:\s*(.+?)\]/gi;
@@ -889,34 +1477,97 @@ Message: "${text.substring(0, 200)}"`;
           responseText = responseText.replace(/\s*\[REMEMBER:\s*.+?\]/gi, '').trim();
           if (hasMemory && this.rag) this.rag.reindex().catch(() => {});
 
-          // Extract [SCHEDULE:] tag — supports relative seconds OR absolute ISO time
-          const scheduleRegex = /\[SCHEDULE:\s*([^\|]+?)\s*\|\s*(?:repeat:(\d+)\s*\|\s*)?(.+?)\]/i;
-          const schedMatch = scheduleRegex.exec(responseText);
-          if (schedMatch) {
-            const timeSpec = schedMatch[1].trim();
-            const repeatSec = schedMatch[2] ? parseInt(schedMatch[2]) : null;
-            let triggerAt;
-            if (/^\d+$/.test(timeSpec)) {
-              // Relative seconds
-              triggerAt = Date.now() + parseInt(timeSpec) * 1000;
-            } else {
-              // Absolute ISO time
-              triggerAt = new Date(timeSpec).getTime();
-              if (isNaN(triggerAt)) {
-                console.warn(`  ⚠️ Invalid schedule time: ${timeSpec}`);
-                triggerAt = null;
+          // Extract [SCHEDULE: ...] tags — supports JSON format and legacy format
+          const scheduleJsonRegex = /\[SCHEDULE:\s*(\{[\s\S]*?\})\s*\]/gi;
+          const scheduleLegacyRegex = /\[SCHEDULE:\s*([^\{][^\]]*?)\]/i;
+          let schedJsonMatch;
+          while ((schedJsonMatch = scheduleJsonRegex.exec(responseText)) !== null) {
+            try {
+              const spec = JSON.parse(schedJsonMatch[1]);
+              // Parse "at": seconds (relative) or ISO string (absolute)
+              let triggerAt;
+              if (typeof spec.at === 'number') {
+                triggerAt = Date.now() + spec.at * 1000;
+              } else if (typeof spec.at === 'string') {
+                triggerAt = new Date(spec.at).getTime();
               }
-            }
-            if (triggerAt) {
+              if (!triggerAt || isNaN(triggerAt)) {
+                console.warn(`  ⚠️ Invalid schedule time: ${spec.at}`);
+                continue;
+              }
               this.scheduler.add({
                 peerId: String(peerId), chatId,
-                message: schedMatch[3].trim(),
+                message: spec.msg || 'Scheduled task',
                 triggerAt,
-                repeatMs: repeatSec ? repeatSec * 1000 : null,
+                repeatMs: spec.repeat ? spec.repeat * 1000 : null,
+                type: spec.type || 'direct',
+                command: spec.cmd || null,
+                condition: spec.if || null,
               });
+            } catch (e) {
+              console.warn(`  ⚠️ Invalid SCHEDULE JSON: ${e.message}`);
             }
           }
-          responseText = responseText.replace(/\s*\[SCHEDULE:\s*[^\]]+\]/gi, '').trim();
+          // Legacy format fallback: [SCHEDULE: <seconds> | <message>]
+          if (!scheduleJsonRegex.test(responseText)) {
+            const legacyMatch = scheduleLegacyRegex.exec(responseText);
+            if (legacyMatch) {
+              const parts = legacyMatch[1].split('|').map(s => s.trim());
+              const timeSpec = parts[0];
+              let triggerAt;
+              if (/^\d+$/.test(timeSpec)) {
+                triggerAt = Date.now() + parseInt(timeSpec) * 1000;
+              } else {
+                triggerAt = new Date(timeSpec).getTime();
+              }
+              if (triggerAt && !isNaN(triggerAt)) {
+                const repeatSec = parts.length >= 3 && /^repeat:(\d+)$/i.test(parts[1])
+                  ? parseInt(parts[1].match(/\d+/)[0]) : null;
+                const msgIdx = repeatSec ? 2 : 1;
+                this.scheduler.add({
+                  peerId: String(peerId), chatId,
+                  message: parts.slice(msgIdx).join('|').trim() || 'Reminder',
+                  triggerAt,
+                  repeatMs: repeatSec ? repeatSec * 1000 : null,
+                });
+              }
+            }
+          }
+          responseText = responseText.replace(/\s*\[SCHEDULE:\s*(?:\{[\s\S]*?\}|[^\]]*?)\]/gi, '').trim();
+
+          // Extract [ASYNC: {...}] tags — lightweight background tasks
+          const asyncJsonRegex = /\[ASYNC:\s*(\{[\s\S]*?\})\s*\]/gi;
+          let asyncMatch;
+          while ((asyncMatch = asyncJsonRegex.exec(responseText)) !== null) {
+            try {
+              const spec = JSON.parse(asyncMatch[1]);
+              if (spec.cmd) {
+                const taskId = this.asyncTasks.add({
+                  peerId: String(peerId), chatId,
+                  cmd: spec.cmd,
+                  msg: spec.msg || 'Analisis hasil task ini',
+                  if: spec.if || null,
+                  aiAnalysis: spec.ai !== false, // default true
+                  replyTo: msg.message.id,
+                  timeout: (spec.timeout || 120) * 1000,
+                });
+                console.log(`  ⚡ Async task created: [${taskId}] ${spec.cmd.substring(0, 60)}`);
+              }
+            } catch (e) {
+              console.warn(`  ⚠️ Invalid ASYNC JSON: ${e.message}`);
+            }
+          }
+          responseText = responseText.replace(/\s*\[ASYNC:\s*\{[\s\S]*?\}\s*\]/gi, '').trim();
+
+          // Extract [KNOW: {...}] tags — dynamic knowledge base
+          if (this.knowledge) {
+            responseText = this.knowledge.processResponse(responseText);
+          }
+
+          // Extract [PLAN: {...}] and [STEP: {...}] tags — task planner
+          if (this.planner) {
+            responseText = this.planner.processResponse(chatId, responseText);
+          }
 
           // Extract [SPAWN: type | description] tag — background task
           const spawnRegex = /\[SPAWN:\s*(code|research|general)\s*\|\s*(.+?)\]/i;
@@ -960,7 +1611,40 @@ Message: "${text.substring(0, 200)}"`;
           }
           responseText = responseText.replace(/\s*\[VOICE:\s*.+?\]/gi, '').trim();
 
-          this.conversationMgr.addMessage(chatId, 'assistant', responseText);
+          // Strip any leaked tool tags from response
+          responseText = responseText.replace(/\[TOOL:\s*\w+\][\s\S]*?\[\/TOOL\]/gi, '').trim();
+          responseText = responseText.replace(/\[TOOL:\s*\w+\]\s*/gi, '').trim();
+          responseText = responseText.replace(/\[\/TOOL\]\s*/gi, '').trim();
+
+          // Strip "mau lanjut?" spam — auto-continue enforcement
+          // Remove sentences asking permission to continue (AI should just do it)
+          responseText = responseText.replace(/\n*(?:^|\n).*(?:mau (?:gue |gw |aku )?(?:lanjut|lanjutin|gas|terus)|(?:lanjut|lanjutin|gas) (?:gak|ga|nggak|tidak|ngga)?[?\s]*(?:✨|🚀|💪|🔥)?|tinggal bilang[^.\n]*|mau (?:gue |gw )?(?:selesaiin|kerjain|handle)[^.\n]*\?)\s*$/gmi, '').trim();
+
+          // Mask sshpass passwords in responses
+          responseText = responseText.replace(/sshpass\s+-p\s+'[^']*'/g, "sshpass -p '***'");
+          responseText = responseText.replace(/sshpass\s+-p\s+\S+/g, "sshpass -p ***");
+
+          // Mask any accidentally leaked credentials in response
+          responseText = responseText.replace(/\b(sk-[A-Za-z0-9_-]{10,})\b/g, (m) => m.substring(0, 7) + '...[masked]');
+          responseText = responseText.replace(/\b(AIza[A-Za-z0-9_-]{10,})\b/g, (m) => m.substring(0, 7) + '...[masked]');
+          responseText = responseText.replace(/((?:API_KEY|SECRET|TOKEN|PASSWORD|CONSUMER_KEY|APP_SECRET)\s*[=:]\s*)(\S{8,})/gi, (m, prefix, val) => prefix + val.substring(0, 4) + '...[masked]');
+
+          // Hard limit: strip long encoded/cert/key blocks from response
+          // Catches base64 blobs, PEM certificates, CSRs, etc.
+          responseText = responseText.replace(/-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g, '[content saved to file — not shown in chat]');
+          // Strip any remaining base64-like blocks (40+ chars of base64 per line, 5+ lines)
+          responseText = responseText.replace(/(?:^[A-Za-z0-9+\/=]{40,}\n){5,}/gm, '[...long encoded content truncated...]\n');
+          // Hard cap: if response > 2000 chars, truncate with notice
+          if (responseText.length > 2000) {
+            responseText = responseText.substring(0, 1900) + '\n\n...(output terlalu panjang, sisanya di-truncate)';
+            console.log(`  ✂️ Response truncated from ${responseText.length} to 2000 chars`);
+          }
+
+          // Stop typing indicator before sending response
+          clearInterval(typingInterval);
+
+          const finalTopic = this.topicMgr ? this.topicMgr.getActiveTopic(chatId) : null;
+          this.conversationMgr.addMessage(chatId, 'assistant', responseText, finalTopic);
 
           // Reply logic:
           // - DM: no reply (plain message) UNLESS there are queued messages for this chat
@@ -977,10 +1661,21 @@ Message: "${text.substring(0, 200)}"`;
           }
 
           if (responseText) {
-            if (placeholderMsgId) {
-              await this.gram.editMessage(peerId, placeholderMsgId, responseText);
-            } else {
-              await this.gram.sendMessage(peerId, responseText, replyTo);
+            console.log(`  📨 Sending response (${responseText.length} chars)...`);
+            try {
+              if (placeholderMsgId) {
+                await this.gram.editMessage(peerId, placeholderMsgId, responseText);
+              } else {
+                await this.gram.sendMessage(peerId, responseText, replyTo);
+              }
+            } catch (sendErr) {
+              console.error(`  ❌ Send failed: ${sendErr.message}`);
+              // Emergency fallback: try sending truncated
+              try {
+                await this.gram.sendMessage(peerId, responseText.substring(0, 2000) + '\n\n...(truncated)', replyTo);
+              } catch (e2) {
+                console.error(`  ❌ Emergency send also failed: ${e2.message}`);
+              }
             }
           } else if (placeholderMsgId) {
             // No text response, delete placeholder
@@ -1024,6 +1719,7 @@ Message: "${text.substring(0, 200)}"`;
           this.stats.record(msg.senderId || msg.message.senderId, msg.senderName, tokensUsed || 0, usedCfg.model);
           console.log(`✅ Responded to ${msg.senderName} (${tokensUsed || '?'} tokens)${replyTo ? ' [reply]' : ''}`);
         } catch (err) {
+          if (typingInterval) clearInterval(typingInterval);
           console.error('❌ Bridge error:', err.message);
           try {
             await this.gram.sendMessage(peerId, '⚠️ Sorry, ada error. Coba lagi ya.', msg.message.id);
