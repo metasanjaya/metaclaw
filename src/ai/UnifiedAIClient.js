@@ -224,6 +224,60 @@ If a simple answer suffices, give it without elaboration.`;
     }
   }
 
+  /**
+   * Chat with tools/function calling
+   * 
+   * @param {Array} messages - Conversation messages
+   * @param {Array} tools - Tool definitions with { name, description, params }
+   * @param {object} options - Chat options (model, maxTokens, temperature, etc)
+   * @returns {Promise<{ text: string, toolCalls?: Array<{id: string, name: string, input: object}>, model: string, tokensUsed: number, provider: string }>}
+   */
+  async chatWithTools(messages, tools, options = {}) {
+    const { maxTokens = 1000, temperature = 0.7 } = options;
+
+    const { provider, model } = this._resolve(options);
+    const finalModel = options.model || model;
+
+    try {
+      const p = this._getProvider(provider);
+      
+      // If provider doesn't support chatWithTools, use regular chat
+      if (!p.chatWithTools || typeof p.chatWithTools !== 'function') {
+        console.warn(`⚠️ Provider ${provider} doesn't support native tool calling, falling back to chat()`);
+        return await p.chat(messages, { model: finalModel, maxTokens, temperature });
+      }
+      
+      const result = await p.chatWithTools(
+        messages, 
+        tools,
+        { model: finalModel, maxTokens, temperature }
+      );
+      
+      // Post-process text but preserve tool calls
+      return { ...result, text: this._postProcess(result.text) };
+    } catch (error) {
+      const fbProvider = this.config.fallbackProvider || process.env.AI_FALLBACK_PROVIDER;
+      const fbModel = this.config.fallbackModel || process.env.AI_FALLBACK_MODEL;
+      if (fbProvider && this.providers[fbProvider]) {
+        console.warn(`⚠️ ${provider} failed, falling back to ${fbProvider}: ${error.message}`);
+        const p = this._getProvider(fbProvider);
+        
+        // Check if fallback supports tools
+        if (!p.chatWithTools || typeof p.chatWithTools !== 'function') {
+          return await p.chat(messages, { model: fbModel, maxTokens, temperature });
+        }
+        
+        const result = await p.chatWithTools(
+          messages,
+          tools,
+          { model: fbModel, maxTokens, temperature }
+        );
+        return { ...result, text: this._postProcess(result.text) };
+      }
+      throw error;
+    }
+  }
+
   /** @private */
   async _generateLocal(prompt, options = {}) {
     if (!this.localModel) throw new Error('Local LLM not available');

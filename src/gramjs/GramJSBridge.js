@@ -696,15 +696,62 @@ Message: "${text.substring(0, 200)}"`;
     }
   }
 
-  _parseToolCalls(text) {
-    const regex = /\[TOOL:\s*(shell|search|fetch|read|write|ls|image)(?:\s+path=([^\]]*))?\]\s*([\s\S]*?)\s*\[\/TOOL\]/gi;
-    const calls = [];
-    let match;
-    while ((match = regex.exec(text)) !== null) {
-      calls.push({ type: match[1].toLowerCase(), pathArg: match[2]?.trim(), content: match[3].trim() });
-    }
-    return calls;
+  _getToolDefinitions() {
+    return [
+      {
+        name: "shell",
+        description: "Execute a shell command on the server",
+        params: {
+          command: { type: "string", description: "Shell command to execute" }
+        }
+      },
+      {
+        name: "search",
+        description: "Search the web",
+        params: {
+          query: { type: "string", description: "Search query" }
+        }
+      },
+      {
+        name: "fetch",
+        description: "Fetch webpage content",
+        params: {
+          url: { type: "string", description: "URL to fetch" }
+        }
+      },
+      {
+        name: "read",
+        description: "Read a file",
+        params: {
+          path: { type: "string", description: "File path to read" }
+        }
+      },
+      {
+        name: "write",
+        description: "Write content to a file",
+        params: {
+          path: { type: "string", description: "File path" },
+          content: { type: "string", description: "File content" }
+        }
+      },
+      {
+        name: "ls",
+        description: "List directory contents",
+        params: {
+          path: { type: "string", description: "Directory path" }
+        }
+      },
+      {
+        name: "image",
+        description: "Analyze an attached image",
+        params: {
+          prompt: { type: "string", description: "What to analyze in the image" }
+        }
+      }
+    ];
   }
+
+  // _parseToolCalls method removed - now using native function calling
 
   // Patterns that indicate long-running commands (>10s expected)
   _isLongRunningCmd(cmd) {
@@ -728,69 +775,200 @@ Message: "${text.substring(0, 200)}"`;
     return patterns.some(p => p.test(cmd));
   }
 
-  async _executeToolCalls(toolCalls, imagePath) {
-    const results = [];
-    for (const call of toolCalls) {
-      let result;
-      try {
-        switch (call.type) {
-          case 'shell':
-            // Auto-detect long-running commands → run async
-            if (this._isLongRunningCmd(call.content) && this.asyncTasks) {
-              const taskId = this.asyncTasks.add({
-                peerId: this._currentPeerId,
-                chatId: this._currentChatId,
-                cmd: call.content,
-                msg: 'Analisis dan rangkum hasil command ini',
-                timeout: 300000, // 5 min for long tasks
-              });
-              result = `⚡ Command berjalan di background (task ${taskId}). Hasil akan dikirim otomatis setelah selesai.`;
-              const safeLog = call.content.replace(/sshpass\s+-p\s+'[^']*'/g, "sshpass -p '***'").replace(/sshpass\s+-p\s+\S+/g, "sshpass -p ***").substring(0, 60);
-              console.log(`  ⚡ Auto-async: "${safeLog}" → task ${taskId}`);
-            } else {
-              result = await this.tools.execShell(call.content);
-              result = result.stdout + (result.stderr ? `\nSTDERR: ${result.stderr}` : '');
-            }
-            break;
-          case 'search':
-            const searchResults = await this.tools.webSearch(call.content);
-            result = searchResults.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`).join('\n\n');
-            break;
-          case 'fetch':
-            const fetched = await this.tools.webFetch(call.content);
-            result = `Title: ${fetched.title}\n\n${fetched.content}`;
-            break;
-          case 'read':
-            result = await this.tools.readFile(call.content);
-            break;
-          case 'write':
-            result = await this.tools.writeFile(call.pathArg || call.content, call.pathArg ? call.content : '');
-            break;
-          case 'ls':
-            result = await this.tools.listDir(call.content);
-            break;
-          case 'image':
-            if (imagePath) {
-              const analysis = await this.tools.analyzeImage(imagePath, call.content);
-              result = analysis.description;
-            } else {
-              result = 'No image available to analyze';
-            }
-            break;
-        }
-      } catch (err) {
-        result = `Error: ${err.message}`;
-      }
-      results.push({ type: call.type, result: result || '(empty)' });
-      console.log(`  🔧 Tool [${call.type}]: ${(result || '').substring(0, 80)}`);
+  async _callAIWithTools(chatId, systemPrompt, tools, currentQuery) {
+    // Build optimized conversation history for the AI
+    let history;
+    if (this.conversationMgr && currentQuery) {
+      history = await this.conversationMgr.getOptimizedHistory(chatId, currentQuery);
+    } else if (this.conversationMgr) {
+      history = this.conversationMgr.getRawHistory(chatId);
+    } else {
+      history = [];
     }
-    return results;
+
+    // Ensure first non-system message is 'user' role
+    const firstNonSystemIdx = history.findIndex(m => m.role !== 'system');
+    if (firstNonSystemIdx !== -1 && history[firstNonSystemIdx].role === 'assistant') {
+      // Skip assistant messages at the start until we find a user message
+      let skipUntil = firstNonSystemIdx;
+      while (skipUntil < history.length && history[skipUntil].role !== 'user') {
+        skipUntil++;
+      }
+      if (skipUntil < history.length) {
+        history = [...history.slice(0, firstNonSystemIdx), ...history.slice(skipUntil)];
+      } else {
+        // No user messages at all — prepend synthetic one
+        history = [{ role: 'user', content: '(continued conversation)' }, ...history];
+      }
+    }
+
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      ...history,
+    ];
+
+    // Smart model routing based on complexity
+    const complexity = this._classifyComplexity(currentQuery || messages[messages.length - 1]?.content, chatId);
+    let providerName, modelName;
+    const modelCfg = complexity === 'simple'
+      ? this.config.models?.simple || { provider: 'google', model: 'gemini-2.5-flash' }
+      : this.config.models?.complex || { provider: 'google', model: 'gemini-2.5-pro' };
+    providerName = modelCfg.provider;
+    modelName = modelCfg.model;
+
+    // Dynamic maxTokens based on complexity
+    const maxTokens = complexity === 'complex' ? 8192 : 2048;
+    console.log(`  🧠 Routing: ${complexity} → ${providerName}/${modelName} (maxTokens: ${maxTokens})`);
+
+    // Call AI with tools
+    try {
+      const result = await this.ai.chatWithTools(messages, tools, {
+        provider: providerName,
+        model: modelName,
+        maxTokens,
+        temperature: 0.7
+      });
+
+      // Track token usage
+      const tokensUsed = result.tokensUsed || 0;
+      // Stats tracking handled in main message handler via this.stats.record()
+      
+      // Track daily usage by model
+      const dayKey = new Date().toISOString().split('T')[0];
+      if (!this.costTracker[modelName]) {
+        this.costTracker[modelName] = { total: 0, daily: {} };
+      }
+      this.costTracker[modelName].total += tokensUsed;
+      this.costTracker[modelName].daily[dayKey] = (this.costTracker[modelName].daily[dayKey] || 0) + tokensUsed;
+
+      return result;
+    } catch (error) {
+      console.error(`❌ AI call failed: ${error.message}`);
+      throw error;
+    }
   }
 
-  _classifyComplexity(text) {
+  async _executeSingleTool(toolName, toolInput, imagePath) {
+    try {
+      switch (toolName) {
+        case 'shell':
+          const cmd = toolInput.command;
+          // Auto-detect long-running commands → run async
+          if (this._isLongRunningCmd(cmd) && this.asyncTasks) {
+            const taskId = this.asyncTasks.add({
+              peerId: this._currentPeerId,
+              chatId: this._currentChatId,
+              cmd: cmd,
+              msg: 'Analisis dan rangkum hasil command ini',
+              timeout: 300000, // 5 min for long tasks
+            });
+            const safeLog = cmd.replace(/sshpass\s+-p\s+'[^']*'/g, "sshpass -p '***'")
+                              .replace(/sshpass\s+-p\s+\S+/g, "sshpass -p ***")
+                              .substring(0, 60);
+            console.log(`  ⚡ Auto-async: "${safeLog}" → task ${taskId}`);
+            return `⚡ Command berjalan di background (task ${taskId}). Hasil akan dikirim otomatis setelah selesai.`;
+          } else {
+            const result = await this.tools.execShell(cmd);
+            return result.stdout + (result.stderr ? `\nSTDERR: ${result.stderr}` : '');
+          }
+        
+        case 'search':
+          const searchResults = await this.tools.webSearch(toolInput.query);
+          return searchResults.map((r, i) => 
+            `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`
+          ).join('\n\n');
+        
+        case 'fetch':
+          const fetched = await this.tools.webFetch(toolInput.url);
+          return `Title: ${fetched.title}\n\n${fetched.content}`;
+        
+        case 'read':
+          return await this.tools.readFile(toolInput.path);
+        
+        case 'write':
+          return await this.tools.writeFile(toolInput.path, toolInput.content);
+        
+        case 'ls':
+          return await this.tools.listDir(toolInput.path);
+        
+        case 'image':
+          if (imagePath) {
+            const analysis = await this.tools.analyzeImage(imagePath, toolInput.prompt || '');
+            return analysis.description;
+          } else {
+            return 'No image available to analyze';
+          }
+        
+        default:
+          return `Unknown tool: ${toolName}`;
+      }
+    } catch (error) {
+      const msg = error.message || String(error);
+      // Mask sensitive data in error messages
+      const maskedPatterns = [
+        [/\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/g, '[MASKED_CREDENTIAL]'],
+        [/\bAIza[A-Za-z0-9_-]{33,}\b/g, '[API_KEY]'],
+        [/\bsk-[A-Za-z0-9_-]{20,}\b/g, '[TOKEN]'],
+        [/\bpassword\s*[:=]\s*\S+/ig, 'password=[MASKED]'],
+        [/\bapi[_-]?key\s*[:=]\s*\S+/ig, 'api_key=[MASKED]']
+      ];
+      
+      let masked = msg;
+      for (const [pattern, replacement] of maskedPatterns) {
+        masked = masked.replace(pattern, replacement);
+      }
+      return masked;
+    }
+  }
+
+  _addToolRoundToHistory(chatId, aiResponse, toolResults) {
+    if (!this.conversationMgr) return;
+
+    // Add assistant message with text (if any) - tool calls are internal
+    if (aiResponse.text && aiResponse.text.trim()) {
+      this.conversationMgr.addMessage(chatId, 'assistant', aiResponse.text);
+    }
+
+    // Format tool results as readable text for history
+    const toolOutputs = [];
+    for (const tr of toolResults) {
+      const tc = aiResponse.toolCalls.find(t => t.id === tr.id);
+      if (tc) {
+        toolOutputs.push(`[${tc.name}]:\n${tr.result}`);
+      }
+    }
+    
+    if (toolOutputs.length > 0) {
+      const resultsText = `Tool results:\n${toolOutputs.join('\n\n')}`;
+      this.conversationMgr.addMessage(chatId, 'user', resultsText);
+    }
+  }
+
+  // _executeToolCalls method removed - now using _executeSingleTool with native function calling
+
+  _classifyComplexity(text, chatId = null) {
     if (!text) return 'simple';
     const words = text.trim().split(/\s+/);
     const lower = text.toLowerCase();
+
+    // Continuation keywords — if user says "lanjut"/"gas"/"oke"/"test", they're continuing a complex task
+    const continueKeywords = ['lanjut', 'lanjutin', 'gas', 'terus', 'next', 'continue', 'oke lanjut', 'go', 'yuk'];
+    const isContinuation = words.length <= 5 && continueKeywords.some(kw => lower.includes(kw));
+
+    // If there's an active plan for this chat → always complex (task in progress)
+    if (chatId && this.taskPlanner) {
+      const activePlan = this.taskPlanner.getActive(chatId);
+      if (activePlan) return 'complex';
+    }
+
+    // If continuation AND recent history has complex work → complex
+    if (isContinuation && chatId && this.conversationMgr) {
+      const recent = this.conversationMgr.getRawHistory(chatId).slice(-5);
+      const recentText = recent.map(m => m.content).join(' ').toLowerCase();
+      const hasComplexContext = ['ssh', 'nginx', 'ssl', 'cert', 'server', 'deploy', 'install', 'config', 'error', 'failed'].some(kw => recentText.includes(kw));
+      if (hasComplexContext) return 'complex';
+    }
+
     const codeKeywords = ['function', 'error', 'bug', 'deploy', 'server', 'database', 'api', 'regex', 'config', 'docker', 'git', 'npm', 'build', 'compile', 'debug', 'code', 'script', 'install', 'package', 'module', 'import', 'export', 'class', 'async', 'await', 'promise', 'callback', 'middleware', 'endpoint', 'query', 'schema', 'migration', 'terraform', 'kubernetes', 'nginx', 'systemctl', 'ssh', 'curl', 'wget'];
     const hasCodeKeyword = codeKeywords.some(kw => lower.includes(kw));
     if (words.length < 10 && !hasCodeKeyword) return 'simple';
@@ -835,7 +1013,7 @@ Message: "${text.substring(0, 200)}"`;
     }
 
     // Smart model routing based on complexity
-    const complexity = this._classifyComplexity(currentQuery || extraUserMsg);
+    const complexity = this._classifyComplexity(currentQuery || extraUserMsg, chatId);
     let providerName, modelName;
     const modelCfg = complexity === 'simple'
       ? this.config.models?.simple || { provider: 'google', model: 'gemini-2.5-flash' }
@@ -907,43 +1085,30 @@ Message: "${text.substring(0, 200)}"`;
       }
     }
 
+    const tools = this._getToolDefinitions();
     let totalTokens = 0;
+
     for (let round = 0; round < maxRounds; round++) {
-      const result = await this._callAIWithHistory(chatId, systemPrompt, null, currentQuery);
+      const result = await this._callAIWithTools(chatId, systemPrompt, tools, currentQuery);
       totalTokens += result.tokensUsed || 0;
 
-      let responseText = result?.text || result?.content || String(result);
-      const toolCalls = this._parseToolCalls(responseText);
-
-      if (toolCalls.length === 0) {
-        // Detect truncated response — AI wanted to use a tool but got cut off
-        const trimmed = responseText.trim();
-        const hasPartialTool = /\[TOOL:\s*\w*$/.test(trimmed) || /\[TOOL:[^\]]*$/.test(trimmed);
-        // Also detect responses that clearly plan to act but didn't include tool
-        const endsWithAction = /(?:sekarang|lanjut|berikut|ini|nya|setup|install|execute|run|config).*[:\.]\s*$/i.test(trimmed) && trimmed.length < 200;
-        const planningToAct = /(?:gue |aku |gw |saya )(?:akan |mau |coba |tulis|bikin|download|upload|setup|install|push|copy|restart)/i.test(trimmed) && trimmed.length < 200;
-        const looksIncomplete = hasPartialTool || endsWithAction || planningToAct;
-        // Max 2 auto-continues per request
-        if (!this._truncContinues) this._truncContinues = 0;
-        if (looksIncomplete && this._truncContinues < 2 && round < maxRounds - 1) {
-          this._truncContinues++;
-          console.log(`  ⚠️ Truncated response detected (round ${round + 1}): ${hasPartialTool ? 'partial tool' : 'incomplete sentence'}`);
-          if (this.conversationMgr) {
-            this.conversationMgr.addMessage(chatId, 'assistant', trimmed);
-            this.conversationMgr.addMessage(chatId, 'user', '[System: Response terpotong. Langsung EKSEKUSI pakai [TOOL:] — jangan ulangi penjelasan, langsung action.]');
-          }
-          continue;
-        }
-        this._truncContinues = 0;
-        return { responseText, tokensUsed: totalTokens };
+      if (!result.toolCalls || result.toolCalls.length === 0) {
+        // No tool calls = AI is done, return text response
+        return { responseText: result.text, tokensUsed: totalTokens };
       }
 
-      // Execute tools
-      const toolResults = await this._executeToolCalls(toolCalls, imagePath);
-      const toolOutput = toolResults.map(r => `[${r.type}]:\n${r.result}`).join('\n\n');
+      // Execute each tool call
+      const toolResults = [];
+      for (const tc of result.toolCalls) {
+        const output = await this._executeSingleTool(tc.name, tc.input, imagePath);
+        toolResults.push({ id: tc.id, result: output });
+      }
 
-      // Strip tool tags from assistant message before saving to history
-      const cleanAssistant = responseText.replace(/\[TOOL:\s*\w+[^\]]*\][\s\S]*?\[\/TOOL\]/gi, '').trim();
+      // Format tool output for logging
+      const toolOutput = toolResults.map(tr => {
+        const tc = result.toolCalls.find(t => t.id === tr.id);
+        return `[${tc?.name}]:\n${tr.result}`;
+      }).join('\n\n');
 
       // Detect repeated errors — if same error appears 2+ times, force stop
       const hasPermDenied = toolOutput.includes('Permission denied');
@@ -957,15 +1122,18 @@ Message: "${text.substring(0, 200)}"`;
       }
 
       // Add tool interaction to conversation history
-      if (this.conversationMgr) {
-        if (cleanAssistant) this.conversationMgr.addMessage(chatId, 'assistant', cleanAssistant);
-        if (this._lastErrorType === 'access_repeat') {
-          // Force AI to stop retrying and ask user
-          this.conversationMgr.addMessage(chatId, 'user', `Tool results:\n${toolOutput}\n\n[System: STOP. Error yang sama sudah terjadi 2x berturut-turut. JANGAN coba lagi. Langsung kasih tau user masalahnya dan tanya solusi/akses alternatif. JANGAN pakai tools lagi.]`);
-          this._lastErrorType = null;
-        } else {
-          this.conversationMgr.addMessage(chatId, 'user', `Tool results:\n${toolOutput}\n\nKalau task BELUM selesai, langsung pakai [TOOL:] untuk step berikutnya. Kalau SUDAH selesai, kasih hasil ke user. JANGAN bilang "gue akan..." tanpa langsung eksekusi.`);
+      if (this._lastErrorType === 'access_repeat') {
+        // Force AI to stop retrying and ask user
+        const errorMsg = `[System: STOP. Error yang sama sudah terjadi 2x berturut-turut. JANGAN coba lagi. Langsung kasih tau user masalahnya dan tanya solusi/akses alternatif.]`;
+        this._addToolRoundToHistory(chatId, result, toolResults);
+        
+        if (this.conversationMgr) {
+          this.conversationMgr.messages[this.conversationMgr.messages.length - 1].content += `\n\n${errorMsg}`;
         }
+        this._lastErrorType = null;
+      } else {
+        // Add normal tool round to history
+        this._addToolRoundToHistory(chatId, result, toolResults);
       }
 
       console.log(`  🔄 Tool round ${round + 1}/${maxRounds}`);
@@ -974,10 +1142,10 @@ Message: "${text.substring(0, 200)}"`;
     // Max rounds exhausted — ask AI to summarize progress and ask user for next steps
     console.log(`  ⚠️ Max tool rounds (${maxRounds}) exhausted — requesting summary`);
     if (this.conversationMgr) {
-      this.conversationMgr.addMessage(chatId, 'user', `[System: Max tool rounds (${maxRounds}) reached. Berikan ringkasan progress sejauh ini ke user, apa yang sudah selesai, apa yang belum, dan tanya user mau lanjut yang mana atau ada instruksi lain. JANGAN pakai tools lagi.]`);
+      this.conversationMgr.addMessage(chatId, 'user', `[System: Max tool rounds (${maxRounds}) reached. Berikan ringkasan progress sejauh ini ke user, apa yang sudah selesai, apa yang belum, dan tanya user mau lanjut yang mana atau ada instruksi lain.]`);
     }
-    const final = await this._callAIWithHistory(chatId, systemPrompt, null, currentQuery);
-    return { responseText: final?.text || final?.content || String(final), tokensUsed: totalTokens + (final.tokensUsed || 0) };
+    const final = await this._callAIWithTools(chatId, systemPrompt, [], currentQuery);
+    return { responseText: final.text, tokensUsed: totalTokens + (final.tokensUsed || 0) };
   }
 
   start() {
