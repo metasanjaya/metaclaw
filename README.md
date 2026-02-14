@@ -7,7 +7,8 @@ Personal AI assistant running on Telegram via GramJS (MTProto).
 - 🔧 **Tool Execution** — Shell commands, web search, web fetch, file R/W
 - 🧠 **Memory System** — Auto-memory via [REMEMBER:] tags, /remember, /forget
 - 📚 **RAG Engine** — Semantic search with embeddings for context-aware responses
-- ⏰ **Persistent Scheduler** — Reminders with absolute/relative time, repeat support
+- ⏰ **Smart Scheduler** — 3-tier scheduling system (direct/check/agent) with conditional triggers
+- 💰 **Token-Efficient Monitoring** — Conditional checks run shell commands first, only call AI when anomaly detected (0 tokens when normal)
 - 🎤 **Voice Support** — Transcribe incoming voice notes, TTS reply
 - 📎 **File Handling** — Receive & read documents (Excel, PDF, etc), send files
 - 🚀 **Background Tasks** — Spawn coding/research tasks that run independently
@@ -79,12 +80,41 @@ Edit `config.yaml` for:
 - Features (streaming on/off)
 - Acknowledgment patterns: `data/ack-patterns.json`
 
+## Smart Scheduler
+
+MetaClaw has a 3-tier persistent scheduling system designed for token efficiency:
+
+| Type | Flow | Token Cost | Use Case |
+|------|------|-----------|----------|
+| **direct** | Timer → send message | 0 | Simple reminders |
+| **check** | Timer → run command → AI analyzes | Low (1 round) | Server monitoring |
+| **check+if** | Timer → run command → evaluate condition → AI only if triggered | **0 when normal** | Alerting |
+| **agent** | Timer → full AI pipeline with tools | High | Complex tasks |
+
+### JSON Format
+```
+[SCHEDULE: {"at": 300, "type": "check", "cmd": "curl -so/dev/null -w \"%{http_code}\" https://example.com", "if": "!=200", "repeat": 300, "msg": "Website down, investigate"}]
+```
+
+### Fields
+| Field | Type | Description |
+|-------|------|-------------|
+| `at` | number/string | Seconds (relative) or ISO datetime (absolute) |
+| `msg` | string | Message text or AI prompt |
+| `type` | string | `direct` (default), `check`, `agent` |
+| `cmd` | string | Shell command (for `check` type) |
+| `if` | string | Condition: `==`, `!=`, `>`, `<`, `>=`, `<=`, `contains:`, `!contains:` |
+| `repeat` | number | Repeat interval in seconds |
+
+### Conditions
+When a condition is set, the scheduler runs the command silently. Only if the condition matches, it calls AI for analysis and reports to the user. This means monitoring every 5 minutes costs **zero tokens** when everything is normal.
+
 ## Architecture
 - `src/gramjs/` — Main codebase
   - `GramJSClient.js` — MTProto connection, message handling
   - `GramJSBridge.js` — AI integration, tool execution, message processing
   - `ConversationManager.js` — Chat history with persistence & compaction
-  - `Scheduler.js` — Persistent reminders
+  - `Scheduler.js` — 3-tier persistent scheduler (direct/check/agent)
   - `TaskRunner.js` — Background task execution
   - `ChatQueue.js` — Per-chat concurrent processing
   - `ToolExecutor.js` — Shell, web, file tools

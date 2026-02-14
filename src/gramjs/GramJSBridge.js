@@ -1017,69 +1017,63 @@ Message: "${text.substring(0, 200)}"`;
           responseText = responseText.replace(/\s*\[REMEMBER:\s*.+?\]/gi, '').trim();
           if (hasMemory && this.rag) this.rag.reindex().catch(() => {});
 
-          // Extract [SCHEDULE:] tag — supports relative seconds OR absolute ISO time
-          const scheduleRegex = /\[SCHEDULE:\s*([^\|]+?)\s*\|\s*(?:repeat:(\d+)\s*\|\s*)?(.+?)\]/i;
-          const schedMatch = scheduleRegex.exec(responseText);
-          if (schedMatch) {
-            const timeSpec = schedMatch[1].trim();
-            const repeatSec = schedMatch[2] ? parseInt(schedMatch[2]) : null;
-            let triggerAt;
-            if (/^\d+$/.test(timeSpec)) {
-              // Relative seconds
-              triggerAt = Date.now() + parseInt(timeSpec) * 1000;
-            } else {
-              // Absolute ISO time
-              triggerAt = new Date(timeSpec).getTime();
-              if (isNaN(triggerAt)) {
-                console.warn(`  ⚠️ Invalid schedule time: ${timeSpec}`);
-                triggerAt = null;
+          // Extract [SCHEDULE: ...] tags — supports JSON format and legacy format
+          const scheduleJsonRegex = /\[SCHEDULE:\s*(\{[\s\S]*?\})\s*\]/gi;
+          const scheduleLegacyRegex = /\[SCHEDULE:\s*([^\{][^\]]*?)\]/i;
+          let schedJsonMatch;
+          while ((schedJsonMatch = scheduleJsonRegex.exec(responseText)) !== null) {
+            try {
+              const spec = JSON.parse(schedJsonMatch[1]);
+              // Parse "at": seconds (relative) or ISO string (absolute)
+              let triggerAt;
+              if (typeof spec.at === 'number') {
+                triggerAt = Date.now() + spec.at * 1000;
+              } else if (typeof spec.at === 'string') {
+                triggerAt = new Date(spec.at).getTime();
               }
-            }
-            if (triggerAt) {
-              const rawMsg = schedMatch[3].trim();
-              let type = 'direct', cleanMsg = rawMsg, command = null, condition = null;
-
-              if (/^agent:\s*/i.test(rawMsg)) {
-                // agent: <prompt> → full AI pipeline with tools
-                type = 'agent';
-                cleanMsg = rawMsg.replace(/^agent:\s*/i, '');
-              } else if (/^check:\s*/i.test(rawMsg)) {
-                // check:<command> | [if:<condition> |] <AI prompt>
-                // Format: check:curl -so/dev/null -w "%{http_code}" url | if:!=200 | Website down
-                // Format: check:ping -c3 8.8.8.8 | Analisis hasilnya (no condition)
-                const checkBody = rawMsg.replace(/^check:\s*/i, '');
-                const parts = checkBody.split('|').map(s => s.trim());
-                command = parts[0];
-                let condition = null;
-
-                if (parts.length >= 3 && /^if:\s*/i.test(parts[1])) {
-                  // Has condition: check:cmd | if:cond | prompt
-                  condition = parts[1].replace(/^if:\s*/i, '');
-                  cleanMsg = parts.slice(2).join('|').trim();
-                } else if (parts.length >= 2) {
-                  // No condition: check:cmd | prompt
-                  if (/^if:\s*/i.test(parts[1])) {
-                    condition = parts[1].replace(/^if:\s*/i, '');
-                    cleanMsg = 'Analisis dan rangkum output berikut secara singkat';
-                  } else {
-                    cleanMsg = parts.slice(1).join('|').trim();
-                  }
-                } else {
-                  cleanMsg = 'Analisis dan rangkum output berikut secara singkat';
-                }
-                type = 'check';
+              if (!triggerAt || isNaN(triggerAt)) {
+                console.warn(`  ⚠️ Invalid schedule time: ${spec.at}`);
+                continue;
               }
-
               this.scheduler.add({
                 peerId: String(peerId), chatId,
-                message: cleanMsg,
+                message: spec.msg || 'Scheduled task',
                 triggerAt,
-                repeatMs: repeatSec ? repeatSec * 1000 : null,
-                type, command, condition,
+                repeatMs: spec.repeat ? spec.repeat * 1000 : null,
+                type: spec.type || 'direct',
+                command: spec.cmd || null,
+                condition: spec.if || null,
               });
+            } catch (e) {
+              console.warn(`  ⚠️ Invalid SCHEDULE JSON: ${e.message}`);
             }
           }
-          responseText = responseText.replace(/\s*\[SCHEDULE:\s*[^\]]+\]/gi, '').trim();
+          // Legacy format fallback: [SCHEDULE: <seconds> | <message>]
+          if (!scheduleJsonRegex.test(responseText)) {
+            const legacyMatch = scheduleLegacyRegex.exec(responseText);
+            if (legacyMatch) {
+              const parts = legacyMatch[1].split('|').map(s => s.trim());
+              const timeSpec = parts[0];
+              let triggerAt;
+              if (/^\d+$/.test(timeSpec)) {
+                triggerAt = Date.now() + parseInt(timeSpec) * 1000;
+              } else {
+                triggerAt = new Date(timeSpec).getTime();
+              }
+              if (triggerAt && !isNaN(triggerAt)) {
+                const repeatSec = parts.length >= 3 && /^repeat:(\d+)$/i.test(parts[1])
+                  ? parseInt(parts[1].match(/\d+/)[0]) : null;
+                const msgIdx = repeatSec ? 2 : 1;
+                this.scheduler.add({
+                  peerId: String(peerId), chatId,
+                  message: parts.slice(msgIdx).join('|').trim() || 'Reminder',
+                  triggerAt,
+                  repeatMs: repeatSec ? repeatSec * 1000 : null,
+                });
+              }
+            }
+          }
+          responseText = responseText.replace(/\s*\[SCHEDULE:\s*(?:\{[\s\S]*?\}|[^\]]*?)\]/gi, '').trim();
 
           // Extract [SPAWN: type | description] tag — background task
           const spawnRegex = /\[SPAWN:\s*(code|research|general)\s*\|\s*(.+?)\]/i;

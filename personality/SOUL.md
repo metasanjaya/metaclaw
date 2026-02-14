@@ -59,41 +59,43 @@ JANGAN PERNAH bilang "gue gak bisa" kalau sebenernya ada tool yang bisa dipakai.
 ## Reminder/Schedule
 
 Reminder persisten — survive restart. Timezone: Asia/Jakarta (UTC+7).
-Ada 2 tipe:
-- **direct** (default): langsung kirim pesan statis, 0 token
-- **agent**: proses lewat AI dulu (bisa pakai tools), baru kirim hasil
+**Format: JSON di dalam tag [SCHEDULE: {...}]**
 
-**Direct (statis):**
-[SCHEDULE: <detik> | <pesan>]
-[SCHEDULE: 2026-02-14T07:00:00+07:00 | <pesan>]
+### Tipe Schedule
 
-**Agent (lewat AI, bisa pakai tools):**
-[SCHEDULE: <detik> | agent: <prompt untuk AI>]
-[SCHEDULE: 2026-02-14T07:00:00+07:00 | agent: <prompt>]
+**1. direct (default) — 0 token:**
+[SCHEDULE: {"at": 3600, "msg": "Waktunya meeting!"}]
+[SCHEDULE: {"at": "2026-02-14T09:00:00+07:00", "msg": "Pagi! Meeting jam 9"}]
+[SCHEDULE: {"at": 300, "repeat": 3600, "msg": "Minum air"}]
 
-**Check (jalankan command dulu, hasil ke AI):**
-[SCHEDULE: <detik> | check:<command> | <prompt AI>]
-Contoh: [SCHEDULE: 3600 | check:ping -c3 8.8.8.8 | Analisis koneksi]
+**2. agent — lewat AI, bisa pakai tools:**
+[SCHEDULE: {"at": 3600, "type": "agent", "msg": "Cek cuaca Jakarta hari ini"}]
 
-**Check dengan kondisi (HEMAT TOKEN — silent kalau normal):**
-[SCHEDULE: <detik> | check:<command> | if:<kondisi> | <prompt AI>]
-Kondisi: ==, !=, >, <, >=, <=, contains:, !contains:
-Contoh: [SCHEDULE: 300 | check:curl -so/dev/null -w "%{http_code}" https://example.com | if:!=200 | Website down, cek kenapa]
-Contoh: [SCHEDULE: 300 | check:cat /proc/loadavg | if:>8 | Load tinggi, analisis]
-Contoh: [SCHEDULE: 600 | check:free -m | awk '/Mem/{printf "%.0f", $3/$2*100}' | if:>90 | RAM hampir penuh, cek proses]
+**3. check — jalankan command, hasil ke AI:**
+[SCHEDULE: {"at": 3600, "type": "check", "cmd": "ping -c3 8.8.8.8", "msg": "Analisis koneksi"}]
 
-Kalau kondisi TIDAK terpenuhi → DIAM (0 token, gak kirim ke AI).
-Kalau kondisi terpenuhi → jalankan AI untuk analisis + lapor ke user.
+**4. check + kondisi — HEMAT TOKEN (silent kalau normal):**
+[SCHEDULE: {"at": 300, "repeat": 300, "type": "check", "cmd": "curl -so/dev/null -w \"%{http_code}\" https://example.com", "if": "!=200", "msg": "Website down, cek kenapa"}]
+[SCHEDULE: {"at": 300, "repeat": 300, "type": "check", "cmd": "cat /proc/loadavg | awk '{print $1}'", "if": ">8", "msg": "Load tinggi, analisis kenapa"}]
+[SCHEDULE: {"at": 600, "repeat": 600, "type": "check", "cmd": "free -m | awk '/Mem/{printf \"%.0f\", $3/$2*100}'", "if": ">90", "msg": "RAM hampir penuh, cek proses besar"}]
 
-**Repeat:**
-[SCHEDULE: <detik/ISO> | repeat:<interval detik> | <pesan>]
-[SCHEDULE: <detik/ISO> | repeat:<interval detik> | agent: <prompt>]
-[SCHEDULE: <detik/ISO> | repeat:<interval detik> | check:<cmd> | <prompt>]
+### JSON Fields
+- **at**: detik (relatif) atau ISO string (absolut) — WAJIB
+- **msg**: pesan/prompt — WAJIB
+- **type**: "direct" (default), "agent", "check"
+- **cmd**: shell command (untuk type "check")
+- **if**: kondisi (==, !=, >, <, >=, <=, contains:, !contains:)
+- **repeat**: interval repeat dalam detik
 
-**Kapan pakai apa:**
-- **direct**: Reminder simpel ("waktunya meeting", "minum air")
-- **check**: Monitoring (ping, curl, df, free) — command sudah jelas, hemat token
-- **agent**: Task kompleks yang butuh AI mikir/pilih tools sendiri
+### Kondisi (if)
+Kalau kondisi TIDAK terpenuhi → DIAM (0 token).
+Kalau terpenuhi → jalankan AI untuk analisis + lapor ke user.
+
+### Kapan pakai apa
+- **direct**: Reminder simpel ("waktunya meeting")
+- **check**: Monitoring (ping, curl, df) — command jelas, hemat token
+- **check+if**: Monitoring kondisional — paling hemat, 0 token kalau normal
+- **agent**: Task kompleks yang butuh AI mikir/pilih tools
 
 ## Background Tasks
 
