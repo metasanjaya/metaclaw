@@ -2,6 +2,13 @@
  * Persistent Scheduler for MetaClaw
  * Saves reminders/tasks to JSON file, survives restarts.
  * Supports one-shot and repeating schedules.
+ * 
+ * Job types:
+ * - "direct" (default): Send message directly to chat (0 tokens)
+ * - "agent": Route through AI pipeline with tools (burns tokens, smart)
+ * - "check": Run a shell command first, feed output to AI for analysis (efficient)
+ *   Supports conditions: only triggers AI if condition matches (silent otherwise)
+ *   Conditions: ==, !=, >, <, >=, <=, contains:, !contains:
  */
 
 import fs from 'fs';
@@ -12,12 +19,25 @@ const DATA_FILE = path.join(process.cwd(), 'data', 'schedules.json');
 const CHECK_INTERVAL = 10_000; // check every 10 seconds
 
 export class Scheduler {
-  constructor(sendFn) {
-    /** @param {string} peerId @param {string} message @param {number|null} replyTo */
+  /**
+   * @param {Function} sendFn - Direct message sender (peerId, message, replyTo)
+   * @param {Function|null} agentFn - AI pipeline processor (peerId, chatId, message) → processes through AI with tools
+   * @param {Function|null} checkFn - Run command + feed to AI (peerId, chatId, command, prompt)
+   */
+  constructor(sendFn, agentFn = null, checkFn = null) {
     this.sendFn = sendFn;
+    this.agentFn = agentFn;
+    this.checkFn = checkFn;
     this.jobs = [];
     this.timer = null;
     this._load();
+  }
+
+  /**
+   * Set the agent function (called after bridge is ready)
+   */
+  setAgentFn(fn) {
+    this.agentFn = fn;
   }
 
   /**
@@ -25,13 +45,16 @@ export class Scheduler {
    * @param {object} opts
    * @param {string} opts.peerId - Telegram peer to send to
    * @param {string} opts.chatId - Chat identifier
-   * @param {string} opts.message - Reminder text
+   * @param {string} opts.message - Reminder text or agent prompt
    * @param {number} opts.triggerAt - Unix ms when to fire
    * @param {number|null} opts.repeatMs - If set, reschedule with this interval
    * @param {number|null} opts.replyTo - Message ID to reply to
+   * @param {string} opts.type - "direct" (default), "agent", or "check"
+   * @param {string|null} opts.command - Shell command to run first (for type "check")
+   * @param {string|null} opts.condition - Condition to evaluate (for type "check"), e.g. "!=200", ">8", "contains:error"
    * @returns {string} job id
    */
-  add({ peerId, chatId, message, triggerAt, repeatMs = null, replyTo = null }) {
+  add({ peerId, chatId, message, triggerAt, repeatMs = null, replyTo = null, type = 'direct', command = null, condition = null }) {
     // Dedup: skip if same chat + same message + trigger within 5 minutes
     const dominated = this.jobs.find(j =>
       j.chatId === chatId &&
@@ -51,11 +74,15 @@ export class Scheduler {
       triggerAt,
       repeatMs,
       replyTo,
+      type,
+      command,
+      condition,
       createdAt: Date.now(),
     };
     this.jobs.push(job);
     this._save();
-    console.log(`  📅 Scheduled: "${message}" at ${new Date(triggerAt).toISOString()}${repeatMs ? ` (repeat every ${repeatMs / 1000}s)` : ''}`);
+    const typeLabel = type === 'agent' ? ' [agent]' : '';
+    console.log(`  📅 Scheduled${typeLabel}: "${message}" at ${new Date(triggerAt).toISOString()}${repeatMs ? ` (repeat every ${repeatMs / 1000}s)` : ''}`);
     return job.id;
   }
 
@@ -111,10 +138,23 @@ export class Scheduler {
 
     for (const job of due) {
       try {
-        await this.sendFn(job.peerId, `⏰ Reminder: ${job.message}`, job.replyTo);
-        console.log(`  ✅ Reminder sent: "${job.message}"`);
+        if (job.type === 'check' && this.checkFn && job.command) {
+          // Run command first, evaluate condition, then feed to AI if condition matches
+          console.log(`  🔍 Check job firing: "${job.command}"${job.condition ? ` [if ${job.condition}]` : ''}`);
+          await this.checkFn(job.peerId, job.chatId, job.command, job.message, job.condition);
+          console.log(`  ✅ Check job completed: "${job.message}"`);
+        } else if (job.type === 'agent' && this.agentFn) {
+          // Route through AI pipeline — AI will process and reply
+          console.log(`  🤖 Agent job firing: "${job.message}"`);
+          await this.agentFn(job.peerId, job.chatId, job.message);
+          console.log(`  ✅ Agent job completed: "${job.message}"`);
+        } else {
+          // Direct send — no AI involved
+          await this.sendFn(job.peerId, `⏰ Reminder: ${job.message}`, job.replyTo);
+          console.log(`  ✅ Reminder sent: "${job.message}"`);
+        }
       } catch (e) {
-        console.error(`  ❌ Reminder failed: ${e.message}`);
+        console.error(`  ❌ ${job.type === 'agent' ? 'Agent job' : 'Reminder'} failed: ${e.message}`);
       }
 
       if (job.repeatMs) {
@@ -135,7 +175,10 @@ export class Scheduler {
     try {
       if (fs.existsSync(DATA_FILE)) {
         const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
-        this.jobs = data.jobs || [];
+        this.jobs = (data.jobs || []).map(j => ({
+          ...j,
+          type: j.type || 'direct', // backward compat
+        }));
         console.log(`📅 Loaded ${this.jobs.length} scheduled jobs`);
       }
     } catch (e) {

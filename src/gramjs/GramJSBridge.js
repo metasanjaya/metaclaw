@@ -105,9 +105,73 @@ export class GramJSBridge {
     this.tools.setWorkspace(this.workspacePath);
 
     // Persistent scheduler (survives restarts)
-    this.scheduler = new Scheduler(async (peerId, message, replyTo) => {
-      await this.gram.sendMessage(peerId, message, replyTo);
-    });
+    this.scheduler = new Scheduler(
+      // Direct send function
+      async (peerId, message, replyTo) => {
+        await this.gram.sendMessage(peerId, message, replyTo);
+      },
+      // Agent function — route through AI pipeline
+      async (peerId, chatId, prompt) => {
+        const systemPrompt = await this._buildSystemPrompt(prompt);
+        await this.gram.setTyping(peerId);
+        const typingInterval = setInterval(() => {
+          this.gram.setTyping(peerId).catch(() => {});
+        }, 6000);
+        try {
+          this.conversationMgr.addMessage(chatId, 'user', `[Scheduled task] ${prompt}`);
+          const { responseText } = await this._processWithTools(chatId, systemPrompt, null, 3, prompt);
+          clearInterval(typingInterval);
+          if (responseText) {
+            this.conversationMgr.addMessage(chatId, 'assistant', responseText);
+            await this.gram.sendMessage(peerId, responseText);
+          }
+        } catch (e) {
+          clearInterval(typingInterval);
+          throw e;
+        }
+      },
+      // Check function — run command first, evaluate condition, feed to AI if triggered
+      async (peerId, chatId, command, prompt, condition) => {
+        const { execSync } = await import('child_process');
+        let cmdOutput, cmdFailed = false;
+        try {
+          cmdOutput = execSync(command, { timeout: 30000, encoding: 'utf-8', maxBuffer: 1024 * 512 }).trim();
+        } catch (e) {
+          cmdOutput = (e.stderr || e.stdout || e.message || '').trim();
+          cmdFailed = true;
+        }
+
+        // Evaluate condition — if not met, stay silent (0 tokens)
+        if (condition && !cmdFailed) {
+          const triggered = this._evaluateCondition(cmdOutput, condition);
+          if (!triggered) {
+            console.log(`  ⏭️ Check condition not met: "${condition}" (output: "${cmdOutput.substring(0, 80)}")`);
+            return; // Silent — don't call AI
+          }
+          console.log(`  ⚠️ Check condition triggered: "${condition}" (output: "${cmdOutput.substring(0, 80)}")`);
+        }
+
+        // Condition met (or no condition) → feed to AI
+        const systemPrompt = await this._buildSystemPrompt(prompt);
+        const combinedPrompt = `[Scheduled check — condition triggered]\nCommand: ${command}\nCondition: ${condition || 'none'}\nOutput:\n\`\`\`\n${cmdOutput}\n\`\`\`\n\nTask: ${prompt}`;
+        await this.gram.setTyping(peerId);
+        const typingInterval = setInterval(() => {
+          this.gram.setTyping(peerId).catch(() => {});
+        }, 6000);
+        try {
+          this.conversationMgr.addMessage(chatId, 'user', combinedPrompt);
+          const { responseText } = await this._callAIWithHistory(chatId, systemPrompt, null, prompt);
+          clearInterval(typingInterval);
+          if (responseText) {
+            this.conversationMgr.addMessage(chatId, 'assistant', responseText);
+            await this.gram.sendMessage(peerId, responseText);
+          }
+        } catch (e) {
+          clearInterval(typingInterval);
+          throw e;
+        }
+      }
+    );
 
     // Concurrent chat queue
     this.chatQueue = new ChatQueue();
@@ -183,6 +247,56 @@ export class GramJSBridge {
       console.error(`❌ Voice transcription failed: ${err.message}`);
       return null;
     }
+  }
+
+  /**
+   * Evaluate a condition against command output
+   * Supports: ==, !=, >, <, >=, <=, contains:, !contains:
+   * For numeric comparisons, uses first number found in output
+   */
+  _evaluateCondition(output, condition) {
+    const cond = condition.trim();
+    const outputTrimmed = output.trim();
+
+    // contains / !contains
+    if (cond.startsWith('!contains:')) {
+      return !outputTrimmed.includes(cond.substring(10).trim());
+    }
+    if (cond.startsWith('contains:')) {
+      return outputTrimmed.includes(cond.substring(9).trim());
+    }
+
+    // Comparison operators: extract number from output for numeric comparisons
+    const numMatch = outputTrimmed.match(/([\d.]+)/);
+    const outputNum = numMatch ? parseFloat(numMatch[0]) : NaN;
+
+    if (cond.startsWith('!=')) {
+      const val = cond.substring(2).trim();
+      const valNum = parseFloat(val);
+      if (!isNaN(valNum) && !isNaN(outputNum)) return outputNum !== valNum;
+      return outputTrimmed !== val;
+    }
+    if (cond.startsWith('==')) {
+      const val = cond.substring(2).trim();
+      const valNum = parseFloat(val);
+      if (!isNaN(valNum) && !isNaN(outputNum)) return outputNum === valNum;
+      return outputTrimmed === val;
+    }
+    if (cond.startsWith('>=')) {
+      return !isNaN(outputNum) && outputNum >= parseFloat(cond.substring(2));
+    }
+    if (cond.startsWith('<=')) {
+      return !isNaN(outputNum) && outputNum <= parseFloat(cond.substring(2));
+    }
+    if (cond.startsWith('>')) {
+      return !isNaN(outputNum) && outputNum > parseFloat(cond.substring(1));
+    }
+    if (cond.startsWith('<')) {
+      return !isNaN(outputNum) && outputNum < parseFloat(cond.substring(1));
+    }
+
+    // Default: treat as not-equal check (backward compat)
+    return outputTrimmed !== cond;
   }
 
   async _buildSystemPrompt(userMessage) {
@@ -922,11 +1036,46 @@ Message: "${text.substring(0, 200)}"`;
               }
             }
             if (triggerAt) {
+              const rawMsg = schedMatch[3].trim();
+              let type = 'direct', cleanMsg = rawMsg, command = null, condition = null;
+
+              if (/^agent:\s*/i.test(rawMsg)) {
+                // agent: <prompt> → full AI pipeline with tools
+                type = 'agent';
+                cleanMsg = rawMsg.replace(/^agent:\s*/i, '');
+              } else if (/^check:\s*/i.test(rawMsg)) {
+                // check:<command> | [if:<condition> |] <AI prompt>
+                // Format: check:curl -so/dev/null -w "%{http_code}" url | if:!=200 | Website down
+                // Format: check:ping -c3 8.8.8.8 | Analisis hasilnya (no condition)
+                const checkBody = rawMsg.replace(/^check:\s*/i, '');
+                const parts = checkBody.split('|').map(s => s.trim());
+                command = parts[0];
+                let condition = null;
+
+                if (parts.length >= 3 && /^if:\s*/i.test(parts[1])) {
+                  // Has condition: check:cmd | if:cond | prompt
+                  condition = parts[1].replace(/^if:\s*/i, '');
+                  cleanMsg = parts.slice(2).join('|').trim();
+                } else if (parts.length >= 2) {
+                  // No condition: check:cmd | prompt
+                  if (/^if:\s*/i.test(parts[1])) {
+                    condition = parts[1].replace(/^if:\s*/i, '');
+                    cleanMsg = 'Analisis dan rangkum output berikut secara singkat';
+                  } else {
+                    cleanMsg = parts.slice(1).join('|').trim();
+                  }
+                } else {
+                  cleanMsg = 'Analisis dan rangkum output berikut secara singkat';
+                }
+                type = 'check';
+              }
+
               this.scheduler.add({
                 peerId: String(peerId), chatId,
-                message: schedMatch[3].trim(),
+                message: cleanMsg,
                 triggerAt,
                 repeatMs: repeatSec ? repeatSec * 1000 : null,
+                type, command, condition,
               });
             }
           }
