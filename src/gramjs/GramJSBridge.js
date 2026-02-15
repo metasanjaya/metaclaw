@@ -1587,6 +1587,15 @@ Message: "${text.substring(0, 200)}"`;
       if (!text && !imagePath && !filePath) return;
 
       // File-only message (no text): track file and acknowledge, don't send to AI
+      // Skip stickers/animated stickers — they're not real file attachments
+      const isSticker = msg.fileName && /\.(tgs|webp)$/i.test(msg.fileName) && /sticker/i.test(msg.fileName);
+      if (!text && filePath && msg.fileName && isSticker) {
+        console.log(`  🎨 Sticker ignored: ${msg.fileName}`);
+        const delay = 500 + Math.random() * 500;
+        await new Promise(r => setTimeout(r, delay));
+        await this.gram.sendReaction(peerId, msg.message.id, '😊');
+        return;
+      }
       if (!text && filePath && msg.fileName) {
         this.lastFilePerChat.set(chatId, { path: filePath, name: msg.fileName, at: Date.now() });
         console.log(`  📎 File received & tracked: ${msg.fileName} → ${filePath}`);
