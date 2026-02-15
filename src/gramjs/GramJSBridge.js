@@ -22,6 +22,7 @@ import { TaskPlanner } from './TaskPlanner.js';
 import { SubAgent } from './SubAgent.js';
 import SessionManager from './SessionManager.js';
 import SkillManager from './SkillManager.js';
+import { HeartbeatManager } from './HeartbeatManager.js';
 import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
@@ -324,6 +325,24 @@ export class GramJSBridge {
     // Initialize SkillManager
     await this.skillMgr.init();
     console.log('🔌 SkillManager initialized');
+
+    // Initialize HeartbeatManager
+    this.heartbeat = new HeartbeatManager({
+      heartbeatPath: path.resolve(this.workspacePath, 'HEARTBEAT.md'),
+      agentFn: async (peerId, chatId, prompt) => {
+        const systemPrompt = await this._buildSystemPrompt(prompt, chatId);
+        const maxRounds = this.config?.tools?.max_rounds || 20;
+        const { responseText } = await this._processIsolated(systemPrompt, prompt, maxRounds);
+        if (responseText) await this.gram.sendMessage(peerId, responseText);
+      },
+      sendFn: async (peerId, message) => {
+        await this.gram.sendMessage(peerId, message);
+      },
+      defaultPeerId: this.config.gramjs?.whitelist?.[0]?.toString(),
+      defaultChatId: this.config.gramjs?.whitelist?.[0]?.toString(),
+    });
+    await this.heartbeat.start();
+    console.log('❤️ HeartbeatManager initialized');
   }
 
   async _transcribeVoice(voicePath) {
@@ -849,6 +868,32 @@ Selamat menggunakan! ✨`;
       } catch (e) {
         await this.gram.sendMessage(peerId, `❌ ${e.message}`, messageId);
       }
+      return true;
+    }
+
+    // /heartbeat — status or manual trigger
+    if (text === '/heartbeat') {
+      if (!this.heartbeat) {
+        await this.gram.sendMessage(peerId, '❌ HeartbeatManager not initialized.', messageId);
+        return true;
+      }
+      const s = this.heartbeat.getStatus();
+      const last = this.heartbeat.getLastResults();
+      let msg = `❤️ **Heartbeat Status**\nLast tick: ${s.lastTick ? new Date(s.lastTick).toLocaleString('id-ID') : 'never'}\nChecks run: ${s.checksRun}\nAlerts sent: ${s.alertsSent}\nTasks run: ${s.tasksRun}`;
+      if (last) msg += `\n\nLast results: ${last.checks} checks, ${last.triggered} triggered, ${last.tasksDue} tasks`;
+      await this.gram.sendMessage(peerId, msg, messageId);
+      return true;
+    }
+
+    if (text === '/heartbeat tick') {
+      if (!this.heartbeat) {
+        await this.gram.sendMessage(peerId, '❌ HeartbeatManager not initialized.', messageId);
+        return true;
+      }
+      await this.gram.sendMessage(peerId, '❤️ Manual heartbeat tick...', messageId);
+      await this.heartbeat.tick();
+      const last = this.heartbeat.getLastResults();
+      await this.gram.sendMessage(peerId, `❤️ Done: ${last?.checks || 0} checks, ${last?.triggered || 0} triggered, ${last?.tasksDue || 0} tasks`, messageId);
       return true;
     }
 
