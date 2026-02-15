@@ -19,6 +19,9 @@ import { ConversationManager } from './ConversationManager.js';
 import { TopicManager } from './TopicManager.js';
 import { KnowledgeManager } from './KnowledgeManager.js';
 import { TaskPlanner } from './TaskPlanner.js';
+import { SubAgent } from './SubAgent.js';
+import SessionManager from './SessionManager.js';
+import SkillManager from './SkillManager.js';
 import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
@@ -250,6 +253,19 @@ export class GramJSBridge {
     this.knowledge = new KnowledgeManager();
     this.planner = new TaskPlanner();
 
+    // Sub-agent system
+    this.subAgent = null; // initialized in _initSubsystems after AI is ready
+
+    // Session manager  
+    this.sessionMgr = null; // initialized in _initSubsystems after embedder
+
+    // Skill manager
+    this.skillMgr = new SkillManager({
+      skillsDir: path.resolve('skills'),
+      config: this.config,
+      tools: this.tools,
+    });
+
     console.log(`🧬 Core personality loaded (${this.corePrompt.length} chars)`);
     console.log('🌉 GramJS Bridge initialized (Google Gemini 2.5 Pro)');
   }
@@ -281,6 +297,32 @@ export class GramJSBridge {
       corePrompt: this.corePrompt,
     });
     console.log('🚀 TaskRunner initialized');
+
+    // Initialize SubAgent
+    this.subAgent = new SubAgent({
+      ai: this.ai,
+      tools: this.tools,
+      knowledge: this.knowledge,
+      rag: this.rag,
+      sendFn: async (peerId, message, replyTo) => {
+        await this.gram.sendMessage(peerId, message, replyTo);
+      },
+      asyncTaskManager: this.asyncTasks,
+    });
+    console.log('🤖 SubAgent system initialized');
+
+    // Initialize SessionManager
+    this.sessionMgr = new SessionManager({
+      persistPath: path.join(process.cwd(), 'data', 'sessions'),
+      embedder: embedder,
+      ai: this.ai,
+    });
+    await this.sessionMgr.ready();
+    console.log('📑 SessionManager initialized');
+
+    // Initialize SkillManager
+    await this.skillMgr.init();
+    console.log('🔌 SkillManager initialized');
   }
 
   async _transcribeVoice(voicePath) {
@@ -408,6 +450,14 @@ export class GramJSBridge {
     if (this.topicMgr && chatId) {
       const topicHint = this.topicMgr.getContextHint(chatId);
       if (topicHint) prompt += `\n\n## Conversation Topics\n${topicHint}\n`;
+    }
+
+    // Skill instructions
+    if (this.skillMgr) {
+      const instructions = this.skillMgr.getInstructions();
+      if (instructions) {
+        prompt += `\n\n## Skill Instructions\n${instructions}`;
+      }
     }
 
     return prompt;
@@ -628,6 +678,179 @@ Selamat menggunakan! ✨`;
       return true;
     }
 
+    // /subagent <goal> — spawn a sub-agent task
+    if (text.startsWith('/subagent ')) {
+      const goal = text.slice(10).trim();
+      if (!goal) {
+        await this.gram.sendMessage(peerId, '❌ Usage: /subagent <goal>', messageId);
+        return true;
+      }
+      if (!this.subAgent) {
+        await this.gram.sendMessage(peerId, '❌ SubAgent not initialized yet.', messageId);
+        return true;
+      }
+      const taskId = await this.subAgent.spawn({
+        goal,
+        peerId: String(peerId),
+        chatId,
+        replyTo: messageId,
+        executorModel: this.config.models?.simple?.model || 'claude-sonnet-4-5',
+        plannerModel: this.config.models?.complex?.model || 'claude-opus-4-6',
+      });
+      await this.gram.sendMessage(peerId, `🤖 SubAgent [${taskId}] spawned: "${goal}"`, messageId);
+      return true;
+    }
+
+    // /subagent:status [taskId] — check sub-agent status
+    if (text.startsWith('/subagent:status')) {
+      if (!this.subAgent) {
+        await this.gram.sendMessage(peerId, '❌ SubAgent not initialized.', messageId);
+        return true;
+      }
+      const taskId = text.split(' ')[1]?.trim();
+      if (taskId) {
+        const status = this.subAgent.getStatus(taskId);
+        if (!status) {
+          await this.gram.sendMessage(peerId, `❌ Task ${taskId} not found.`, messageId);
+        } else {
+          await this.gram.sendMessage(peerId, `🤖 **Task ${status.id}**\nGoal: ${status.goal}\nStatus: ${status.status}\nTurns: ${status.turnCount}/${status.maxTurns}\nTokens: ${status.tokensUsed}${status.error ? `\nError: ${status.error}` : ''}${status.result ? `\nResult: ${status.result.slice(0, 500)}` : ''}`, messageId);
+        }
+      } else {
+        const all = this.subAgent.listAll();
+        if (!all.length) {
+          await this.gram.sendMessage(peerId, '📋 No sub-agent tasks.', messageId);
+        } else {
+          const list = all.map(t => `• [${t.id}] ${t.status} — ${t.goal}`).join('\n');
+          await this.gram.sendMessage(peerId, `🤖 **Sub-agents:**\n${list}`, messageId);
+        }
+      }
+      return true;
+    }
+
+    // /subagent:abort <taskId>
+    if (text.startsWith('/subagent:abort ')) {
+      const taskId = text.split(' ')[1]?.trim();
+      if (this.subAgent?.abort(taskId)) {
+        await this.gram.sendMessage(peerId, `🛑 Task ${taskId} abort requested.`, messageId);
+      } else {
+        await this.gram.sendMessage(peerId, `❌ Cannot abort ${taskId}.`, messageId);
+      }
+      return true;
+    }
+
+    // /subagent:answer <taskId> <answer> — answer clarification
+    if (text.startsWith('/subagent:answer ')) {
+      const parts = text.slice(17).trim().split(' ');
+      const taskId = parts[0];
+      const answer = parts.slice(1).join(' ');
+      if (this.subAgent?.answerClarification(taskId, answer)) {
+        await this.gram.sendMessage(peerId, `✅ Answer sent to task ${taskId}.`, messageId);
+      } else {
+        await this.gram.sendMessage(peerId, `❌ Task ${taskId} not waiting for clarification.`, messageId);
+      }
+      return true;
+    }
+
+    // /session list
+    if (text === '/session list' || text === '/sessions') {
+      if (!this.sessionMgr) {
+        await this.gram.sendMessage(peerId, '❌ SessionManager not initialized.', messageId);
+        return true;
+      }
+      const sessions = await this.sessionMgr.listSessions(chatId);
+      if (!sessions.length) {
+        await this.gram.sendMessage(peerId, '📑 No sessions.', messageId);
+      } else {
+        const activeId = (await this.sessionMgr.getActiveSession(chatId))?.id;
+        const list = sessions.map(s => {
+          const active = s.id === activeId ? ' ⬅️' : '';
+          return `• [${s.id.slice(0, 12)}] ${s.type} "${s.label}" — ${s.status}${active}`;
+        }).join('\n');
+        await this.gram.sendMessage(peerId, `📑 **Sessions:**\n${list}`, messageId);
+      }
+      return true;
+    }
+
+    // /session switch <id>
+    if (text.startsWith('/session switch ')) {
+      const sessionId = text.slice(16).trim();
+      try {
+        const sessions = await this.sessionMgr.listSessions(chatId);
+        const match = sessions.find(s => s.id === sessionId || s.id.startsWith(sessionId));
+        if (!match) throw new Error('Session not found');
+        const session = await this.sessionMgr.switchSession(chatId, match.id);
+        await this.gram.sendMessage(peerId, `📑 Switched to session "${session.label}" (${session.type})`, messageId);
+      } catch (e) {
+        await this.gram.sendMessage(peerId, `❌ ${e.message}`, messageId);
+      }
+      return true;
+    }
+
+    // /session new <label>
+    if (text.startsWith('/session new ')) {
+      const label = text.slice(13).trim() || 'New Session';
+      const session = await this.sessionMgr.createSession({ chatId, type: 'task', label });
+      await this.sessionMgr.switchSession(chatId, session.id);
+      await this.gram.sendMessage(peerId, `📑 Created & switched to session "${label}" (${session.id.slice(0, 12)})`, messageId);
+      return true;
+    }
+
+    // /session close — complete active session, switch to main
+    if (text === '/session close') {
+      const active = await this.sessionMgr.getActiveSession(chatId);
+      if (active.type === 'main') {
+        await this.gram.sendMessage(peerId, '❌ Cannot close main session.', messageId);
+      } else {
+        await this.sessionMgr.completeSession(active.id);
+        await this.gram.sendMessage(peerId, `📑 Closed session "${active.label}". Back to main.`, messageId);
+      }
+      return true;
+    }
+
+    // /skill list
+    if (text === '/skill list' || text === '/skills') {
+      const skills = await this.skillMgr.listSkills();
+      if (!skills.length) {
+        await this.gram.sendMessage(peerId, '🔌 No skills installed.', messageId);
+      } else {
+        const list = skills.map(s => `• **${s.name}** v${s.version} [${s.status}] — ${s.description}\n  Tools: ${s.tools.join(', ') || 'none'}`).join('\n');
+        await this.gram.sendMessage(peerId, `🔌 **Skills:**\n${list}`, messageId);
+      }
+      return true;
+    }
+
+    // /skill load <name>
+    if (text.startsWith('/skill load ')) {
+      const name = text.slice(12).trim();
+      try {
+        const tools = await this.skillMgr.loadSkill(name);
+        await this.gram.sendMessage(peerId, `🔌 Loaded skill "${name}" with ${tools.length} tool(s).`, messageId);
+      } catch (e) {
+        await this.gram.sendMessage(peerId, `❌ ${e.message}`, messageId);
+      }
+      return true;
+    }
+
+    // /skill unload <name>
+    if (text.startsWith('/skill unload ')) {
+      const name = text.slice(14).trim();
+      await this.skillMgr.unloadSkill(name);
+      await this.gram.sendMessage(peerId, `🔌 Unloaded skill "${name}".`, messageId);
+      return true;
+    }
+
+    // /skill reload <name>
+    if (text.startsWith('/skill reload ')) {
+      const name = text.slice(14).trim();
+      try {
+        await this.skillMgr.reloadSkill(name);
+        await this.gram.sendMessage(peerId, `🔌 Reloaded skill "${name}".`, messageId);
+      } catch (e) {
+        await this.gram.sendMessage(peerId, `❌ ${e.message}`, messageId);
+      }
+      return true;
+    }
+
     return false;
   }
 
@@ -712,7 +935,7 @@ Message: "${text.substring(0, 200)}"`;
   }
 
   _getToolDefinitions() {
-    return [
+    const coreDefs = [
       {
         name: "shell",
         description: "Execute a shell command on the server",
@@ -764,6 +987,10 @@ Message: "${text.substring(0, 200)}"`;
         }
       }
     ];
+
+    // Add skill tools
+    const skillTools = this.skillMgr ? this.skillMgr.getActiveTools() : [];
+    return [...coreDefs, ...skillTools];
   }
 
   // _parseToolCalls method removed - now using native function calling
@@ -916,6 +1143,10 @@ Message: "${text.substring(0, 200)}"`;
           }
         
         default:
+          // Check if it's a skill tool
+          if (this.skillMgr && this.skillMgr.isSkillTool(toolName)) {
+            return await this.skillMgr.executeTool(toolName, toolInput);
+          }
           return `Unknown tool: ${toolName}`;
       }
     } catch (error) {
@@ -1196,6 +1427,11 @@ Message: "${text.substring(0, 200)}"`;
     let totalTokens = 0;
 
     let promiseRetries = 0; // track "promise to act" retries
+
+    // Check skill triggers
+    if (this.skillMgr && currentQuery) {
+      await this.skillMgr.checkTriggers(currentQuery);
+    }
 
     for (let round = 0; round < maxRounds; round++) {
       const result = await this._callAIWithTools(chatId, systemPrompt, tools, currentQuery);
