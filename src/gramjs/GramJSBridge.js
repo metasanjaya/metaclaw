@@ -275,8 +275,9 @@ export class GramJSBridge {
     await this.memory.initialize();
 
     // Initialize RAG
+    let embedder = null;
     try {
-      const embedder = new EmbeddingManager({ similarityThreshold: 0.3 });
+      embedder = new EmbeddingManager({ similarityThreshold: 0.3 });
       const chunker = new SemanticChunker({ maxChunkSize: 200, minChunkSize: 50, overlapSize: 30 });
       this.rag = new RAGEngine(embedder, chunker);
       await this.rag.initialize();
