@@ -32,6 +32,13 @@ access_control:
   reject_calls: true
   auto_leave_unauthorized: true
 
+# Tools
+tools:
+  max_rounds: 200  # max tool call rounds per message
+
+# Debug mode (dumps AI requests to data/debug/)
+debug: false
+
 # Workspace (MetaClaw's working directory)
 workspace:
   path: ./workspace
