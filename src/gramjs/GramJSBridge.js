@@ -1824,6 +1824,76 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
   }
 
   /**
+   * Parse and execute response tags from AI output.
+   * Handles [REMEMBER:], [SCHEDULE:] (JSON and legacy), and other tag patterns.
+   * Returns cleaned responseText with tags stripped.
+   */
+  async _parseResponseTags(responseText, peerId, chatId) {
+    if (!responseText) return responseText;
+
+    let cleanedText = responseText;
+
+    // Extract [REMEMBER:] tags
+    const rememberRegex = /\[REMEMBER:\s*(.+?)\]/gi;
+    let match;
+    let hasMemory = false;
+    while ((match = rememberRegex.exec(cleanedText)) !== null) {
+      if (this.memory) {
+        this.memory.addMemory(match[1].trim());
+        hasMemory = true;
+        console.log(`  💾 Auto-remembered: "${match[1].trim()}"`);
+      }
+    }
+    cleanedText = cleanedText.replace(/\s*\[REMEMBER:\s*.+?\]/gi, '').trim();
+    if (hasMemory && this.rag) {
+      this.rag.reindex().catch(() => {});
+    }
+
+    // Extract [SCHEDULE:] tags (JSON format)
+    const scheduleJsonRegex = /\[SCHEDULE:\s*(\{[\s\S]*?\})\s*\]/gi;
+    let schedJsonMatch;
+    while ((schedJsonMatch = scheduleJsonRegex.exec(cleanedText)) !== null) {
+      try {
+        const spec = JSON.parse(schedJsonMatch[1]);
+        let triggerAt;
+        if (typeof spec.at === 'number') {
+          triggerAt = Date.now() + spec.at * 1000;
+        } else {
+          triggerAt = new Date(spec.at).getTime();
+        }
+        if (this.scheduler) {
+          const jobId = await this.scheduler.schedule({
+            triggerAt,
+            type: spec.type || 'direct',
+            message: spec.message || spec.msg || '',
+            peerId: String(peerId),
+            chatId: String(chatId),
+            repeatHours: spec.repeat_hours,
+          });
+          console.log(`  ⏰ Scheduled job ${jobId}: ${spec.message || spec.msg}`);
+        }
+      } catch (err) {
+        console.warn(`  ⚠️ Schedule parse error: ${err.message}`);
+      }
+    }
+    cleanedText = cleanedText.replace(/\[\/SCHEDULE\]/gi, '').trim();
+
+    // Extract [SCHEDULE:] tags (legacy format - non-JSON)
+    const scheduleLegacyRegex = /\[SCHEDULE:\s*([^\{][^\]]*?)\]/gi;
+    let schedLegacyMatch;
+    while ((schedLegacyMatch = scheduleLegacyRegex.exec(cleanedText)) !== null) {
+      const legacyContent = schedLegacyMatch[1].trim();
+      // Try to parse as relative time (e.g., "in 30 minutes", "tomorrow at 3pm")
+      // For now, log that we found a legacy schedule tag - user can convert to JSON
+      console.log(`  ⚠️ Legacy SCHEDULE tag found (convert to JSON): "${legacyContent}"`);
+    }
+    // Remove legacy schedule tags too
+    cleanedText = cleanedText.replace(/\[SCHEDULE:\s*[^\{][^\]]*?\]/gi, '').trim();
+
+    return cleanedText;
+  }
+
+  /**
    * Process a task in isolated context — no conversation history, just system prompt + task.
    * Used by AsyncTaskManager for token-efficient background tasks.
    */
@@ -1866,7 +1936,11 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
       totalOutputTokens += result.outputTokens || 0;
 
       if (!result.toolCalls || result.toolCalls.length === 0) {
-        return { responseText: result.text, tokensUsed: totalTokens, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
+        // Parse response tags before returning
+        const peerId = opts.peerId || this._currentPeerId || '';
+        const chatId = opts.chatId || this._currentChatId || '';
+        const cleanedResponse = await this._parseResponseTags(result.text, peerId, chatId);
+        return { responseText: cleanedResponse, tokensUsed: totalTokens, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
       }
 
       // Execute tool calls
@@ -1895,7 +1969,11 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
       isolatedHistory.push({ role: 'user', content: toolResultText });
     }
 
-    return { responseText: '(max rounds reached)', tokensUsed: totalTokens, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
+    // Parse response tags before returning (max rounds reached)
+    const peerId = opts.peerId || this._currentPeerId || '';
+    const chatId = opts.chatId || this._currentChatId || '';
+    const cleanedResponse = await this._parseResponseTags('(max rounds reached)', peerId, chatId);
+    return { responseText: cleanedResponse, tokensUsed: totalTokens, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
   }
 
   async _processWithTools(chatId, systemPrompt, imagePath, maxRounds = 3, currentQuery = null) {
@@ -2324,45 +2402,8 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
           }
         }
 
-        // Extract [REMEMBER:] tags
-        const rememberRegex = /\[REMEMBER:\s*(.+?)\]/gi;
-        let match;
-        let hasMemory = false;
-        while ((match = rememberRegex.exec(responseText)) !== null) {
-          this.memory.addMemory(match[1].trim());
-          hasMemory = true;
-          console.log(`  💾 Auto-remembered: "${match[1].trim()}"`);
-        }
-        responseText = responseText.replace(/\s*\[REMEMBER:\s*.+?\]/gi, '').trim();
-        if (hasMemory && this.rag) this.rag.reindex().catch(() => {});
-
-        // Extract [SCHEDULE:] tags
-        const scheduleJsonRegex = /\[SCHEDULE:\s*(\{[\s\S]*?\})\s*\]/gi;
-        const scheduleLegacyRegex = /\[SCHEDULE:\s*([^\{][^\]]*?)\]/i;
-        let schedJsonMatch;
-        while ((schedJsonMatch = scheduleJsonRegex.exec(responseText)) !== null) {
-          try {
-            const spec = JSON.parse(schedJsonMatch[1]);
-            let triggerAt;
-            if (typeof spec.at === 'number') {
-              triggerAt = Date.now() + spec.at * 1000;
-            } else {
-              triggerAt = new Date(spec.at).getTime();
-            }
-            const jobId = await this.scheduler.schedule({
-              triggerAt,
-              type: spec.type || 'direct',
-              message: spec.message || spec.msg || '',
-              peerId: String(peerId),
-              chatId: String(chatId),
-              repeatHours: spec.repeat_hours,
-            });
-            console.log(`  ⏰ Scheduled job ${jobId}: ${spec.message || spec.msg}`);
-          } catch (err) {
-            console.warn(`  ⚠️ Schedule parse error: ${err.message}`);
-          }
-        }
-        responseText = responseText.replace(/\[\/SCHEDULE\]/gi, '').trim();
+        // Parse response tags (REMEMBER, SCHEDULE, etc.)
+        responseText = await this._parseResponseTags(responseText, peerId, chatId);
 
         // Reply logic
         let replyTo = null;
