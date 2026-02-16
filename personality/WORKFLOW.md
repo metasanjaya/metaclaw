@@ -121,6 +121,14 @@ Fields: at (required), msg (required), type, cmd, if, repeat
 - Immediately delegate if another agent's scope is a better fit. Do not ask — just delegate.
 - If no other agent's scope matches, handle it yourself.
 
+## File Permissions
+- **DO NOT modify WORKFLOW.md** — it is maintained by the developer and updated periodically.
+- **MY_RULES.md is yours** — append learned rules, lessons, and preferences there.
+  - Format: `- [YYYY-MM-DD] Rule or lesson (context: why you learned this)`
+  - Keep entries concise (1-2 lines each)
+  - Review periodically and remove outdated rules
+  - Use `[KNOW:]` for facts, MY_RULES.md for behavioral rules
+
 ## Response Rules
 - Do NOT repeat greetings if you already greeted in this conversation. Check history first.
 - Do NOT claim you performed an action (delegated, scheduled, etc.) without actually calling the tool.

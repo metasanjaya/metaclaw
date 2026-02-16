@@ -60,6 +60,29 @@ export class LessonLearner {
     }
   }
 
+  _appendToMyRules(lesson, category) {
+    try {
+      const myRulesPath = path.join(__dirname, '../../personality/MY_RULES.md');
+      const date = new Date().toISOString().split('T')[0];
+      const line = `- [${date}] ${lesson} (${category})\n`;
+
+      // Read existing to avoid duplicates
+      let existing = '';
+      if (fs.existsSync(myRulesPath)) {
+        existing = fs.readFileSync(myRulesPath, 'utf-8');
+      }
+
+      // Skip if similar rule already exists (first 40 chars match)
+      const lessonKey = lesson.substring(0, 40).toLowerCase();
+      if (existing.toLowerCase().includes(lessonKey)) return;
+
+      fs.appendFileSync(myRulesPath, line);
+      console.log(`📝 MY_RULES.md updated: ${lesson}`);
+    } catch (err) {
+      console.warn(`⚠️ MY_RULES.md append failed: ${err.message}`);
+    }
+  }
+
   /**
    * Log a tool error
    */
@@ -163,6 +186,7 @@ export class LessonLearner {
       if (this.lessons.length > 200) this.lessons = this.lessons.slice(-200);
 
       this._scheduleSave();
+      this._appendToMyRules(lesson, category);
       console.log(`🎓 Lesson learned [${category}]: ${lesson}`);
     } catch (err) {
       console.error(`❌ LessonLearner extract failed: ${err.message}`);
