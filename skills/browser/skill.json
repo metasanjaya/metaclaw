@@ -1,0 +1,40 @@
+{
+  "name": "browser",
+  "version": "1.0.0",
+  "description": "Headless browser automation — open pages, interact, screenshot. Auto-detects MetaPower (antidetect) or falls back to Puppeteer.",
+  "author": "meta",
+  "tools": [
+    {
+      "name": "browser_open",
+      "description": "Open a URL and get the page content as text, or take a screenshot/PDF. Use for pages that require JavaScript rendering or when fetch doesn't work.",
+      "params": {
+        "url": { "type": "string", "description": "URL to open" },
+        "mode": { "type": "string", "description": "text (default), html, screenshot, pdf, status" }
+      }
+    },
+    {
+      "name": "browser_act",
+      "description": "Run automation steps on the current page (click, type, scroll, wait, etc). Steps are a JSON array.",
+      "params": {
+        "url": { "type": "string", "description": "URL to open first (optional if page already open)" },
+        "steps": { "type": "string", "description": "JSON array of steps, e.g. [{\"action\":\"click\",\"selector\":\"#btn\"},{\"action\":\"type\",\"selector\":\"#input\",\"text\":\"hello\"}]" }
+      }
+    },
+    {
+      "name": "browser_screenshot",
+      "description": "Take a screenshot of a URL or current page. Returns the file path.",
+      "params": {
+        "url": { "type": "string", "description": "URL to screenshot" },
+        "fullpage": { "type": "string", "description": "true for full page screenshot (default: false)" }
+      }
+    }
+  ],
+  "triggers": ["buka website", "browse", "screenshot", "login ke", "open page", "scrape"],
+  "autoload": false,
+  "requires": [],
+  "config": {
+    "METAPOWER_PATH": { "type": "string", "required": false, "env": "METAPOWER_PATH", "default": "/root/PROJECT_BROWSER" },
+    "PUPPETEER_EXECUTABLE": { "type": "string", "required": false, "env": "PUPPETEER_EXECUTABLE" }
+  },
+  "instructions": "You have browser automation available. Use browser_open for reading JS-rendered pages. Use browser_act for multi-step interactions (login, form fill, navigation). Use browser_screenshot for visual capture. Prefer fetch for simple pages that don't need JS."
+}

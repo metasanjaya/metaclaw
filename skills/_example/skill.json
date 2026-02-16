@@ -1,0 +1,25 @@
+{
+  "name": "_example",
+  "version": "1.0.0",
+  "description": "Example skill for testing - echo and ping tools",
+  "author": "meta",
+  "tools": [
+    {
+      "name": "echo",
+      "description": "Echo back the input message",
+      "params": {
+        "message": { "type": "string", "description": "Message to echo back" }
+      }
+    },
+    {
+      "name": "ping",
+      "description": "Simple ping/pong health check",
+      "params": {}
+    }
+  ],
+  "triggers": [],
+  "autoload": false,
+  "requires": [],
+  "config": {},
+  "instructions": ""
+}
