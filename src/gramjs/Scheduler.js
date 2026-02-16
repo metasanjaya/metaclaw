@@ -54,7 +54,7 @@ export class Scheduler {
    * @param {string|null} opts.condition - Condition to evaluate (for type "check"), e.g. "!=200", ">8", "contains:error"
    * @returns {string} job id
    */
-  add({ peerId, chatId, message, triggerAt, repeatMs = null, replyTo = null, type = 'direct', command = null, condition = null }) {
+  add({ peerId, chatId, message, triggerAt, repeatMs = null, replyTo = null, type = 'direct', command = null, condition = null, sourceAgent = null, sourceTask = null }) {
     // Dedup: skip if same chat + same message + trigger within 5 minutes
     const dominated = this.jobs.find(j =>
       j.chatId === chatId &&
@@ -77,6 +77,8 @@ export class Scheduler {
       type,
       command,
       condition,
+      sourceAgent,
+      sourceTask,
       createdAt: Date.now(),
     };
     this.jobs.push(job);

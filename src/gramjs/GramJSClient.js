@@ -10,6 +10,7 @@ import { Raw } from 'telegram/events/index.js';
 import readline from 'readline';
 import fs from 'fs';
 import path from 'path';
+import { MessageQueue } from './MessageQueue.js';
 
 export class GramJSClient {
   constructor(config) {
@@ -18,6 +19,11 @@ export class GramJSClient {
     this.sessionFile = config.session_file || 'data/session.txt';
     this.whitelist = (config.whitelist || []).map(id => BigInt(id));
     this.groupMode = config.group_mode || 'mention_only';
+    this.msgQueue = new MessageQueue({
+      minDelay: 1500,      // 1.5s between any sends
+      perChatDelay: 3000,  // 3s between sends to same chat
+      maxQueueSize: 100,
+    });
     this.botUsername = null;
     this.client = null;
     this.messageHandler = null;
@@ -449,7 +455,7 @@ export class GramJSClient {
     }
   }
 
-  async sendMessage(chatId, text, replyTo = null) {
+  async sendMessage(chatId, text, replyTo = null, priority = 1) {
     try {
       // Resolve entity (handles users we haven't chatted with before)
       const peer = await this._resolveEntity(chatId);
@@ -474,21 +480,14 @@ export class GramJSClient {
         const params = { message: parts[i] };
         // Only reply to original on first part
         if (replyTo && i === 0) params.replyTo = replyTo;
-        await this.client.sendMessage(peer, params);
-        // Small delay between parts to avoid flood
-        if (i < parts.length - 1) await new Promise(r => setTimeout(r, 500));
+
+        await this.msgQueue.enqueue(String(chatId), async () => {
+          await this.client.sendMessage(peer, params);
+        }, priority);
       }
       console.log(`📤 Sent response to ${chatId}${parts.length > 1 ? ` (${parts.length} parts)` : ''}`);
     } catch (err) {
       console.error(`❌ Failed to send to ${chatId}:`, err.message);
-      // Handle flood wait
-      if (err.seconds) {
-        console.log(`⏳ Flood wait: ${err.seconds}s`);
-        await new Promise(r => setTimeout(r, err.seconds * 1000 + 1000));
-        try {
-          await this.client.sendMessage(peer || chatId, { message: text.substring(0, 4000), replyTo });
-        } catch {}
-      }
     }
   }
 
@@ -511,10 +510,12 @@ export class GramJSClient {
 
   async sendFile(chatId, filePath, caption = '', replyTo = null) {
     try {
-      const params = { file: filePath };
-      if (caption) params.caption = caption;
-      if (replyTo) params.replyTo = replyTo;
-      await this.client.sendFile(chatId, params);
+      await this.msgQueue.enqueue(String(chatId), async () => {
+        const params = { file: filePath };
+        if (caption) params.caption = caption;
+        if (replyTo) params.replyTo = replyTo;
+        await this.client.sendFile(chatId, params);
+      }, 1);
       console.log(`📤 Sent file to ${chatId}: ${path.basename(filePath)}`);
     } catch (err) {
       console.error(`❌ Failed to send file: ${err.message}`);
@@ -523,9 +524,11 @@ export class GramJSClient {
 
   async sendVoice(chatId, audioPath, replyTo = null) {
     try {
-      const params = { file: audioPath, voiceNote: true };
-      if (replyTo) params.replyTo = replyTo;
-      await this.client.sendFile(chatId, params);
+      await this.msgQueue.enqueue(String(chatId), async () => {
+        const params = { file: audioPath, voiceNote: true };
+        if (replyTo) params.replyTo = replyTo;
+        await this.client.sendFile(chatId, params);
+      }, 1);
       console.log(`📤 Sent voice to ${chatId}`);
     } catch (err) {
       console.error(`❌ Failed to send voice: ${err.message}`);

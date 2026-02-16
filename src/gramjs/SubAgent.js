@@ -199,11 +199,11 @@ export class SubAgent {
       knowledgeCfg: opts.knowledge || null,
 
       // Models
-      plannerModel: opts.plannerModel || 'claude-sonnet-4-5',
-      executorModel: opts.executorModel || 'claude-sonnet-4-5',
+      plannerModel: opts.plannerModel || 'openai/gpt-5.2',
+      executorModel: opts.executorModel || 'minimax/MiniMax-M2.5',
 
       // Limits
-      maxTurns: opts.maxTurns || this.config?.tools?.max_rounds || 200,
+      maxTurns: opts.maxTurns || Math.min(this.config?.tools?.max_rounds || 100, 100),
       timeout: opts.timeout || 3600000,
       allowedTools: opts.tools || null, // null = all
 
@@ -810,6 +810,50 @@ Rules:
       task.clarificationResolve = null;
     }
     return true;
+  }
+
+  /**
+   * Abort all running/pending sub-agents
+   * @returns {number} Number of agents aborted
+   */
+  abortAll() {
+    let count = 0;
+    for (const [id, task] of this.tasks) {
+      if (!['completed', 'failed', 'aborted'].includes(task.status)) {
+        task._aborted = true;
+        task.status = 'aborted';
+        task.error = 'Stopped by abortAll command';
+        task.completedAt = Date.now();
+        if (task.clarificationResolve) {
+          task.clarificationResolve(null);
+          task.clarificationResolve = null;
+        }
+        this._persist(task);
+        count++;
+      }
+    }
+    if (count > 0) console.log(`🤖 Aborted ${count} sub-agents`);
+    return count;
+  }
+
+  /**
+   * Clear all sub-agents (abort running + delete from memory and disk)
+   * @returns {number} Number of agents cleared
+   */
+  clearAll() {
+    this.abortAll();
+    const count = this.tasks.size;
+    // Delete all persisted files
+    for (const [id] of this.tasks) {
+      try {
+        const fp = path.join(DATA_DIR, `${id}.json`);
+        if (fs.existsSync(fp)) fs.unlinkSync(fp);
+      } catch {}
+    }
+    this.tasks.clear();
+    this.listeners.clear();
+    console.log(`🤖 Cleared ${count} sub-agents`);
+    return count;
   }
 
   // ─── Persistence ───

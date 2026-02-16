@@ -1,6 +1,6 @@
 {
   "name": "metaclaw",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "MetaClaw - Token-efficient AI assistant with Warp.dev-style context management",
   "main": "src/index.js",
   "type": "module",
