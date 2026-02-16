@@ -275,6 +275,18 @@ export class GramJSBridge {
     this.autoMemory = null;
     this.lessonLearner = null;
 
+    // Message Batcher - batches messages with typing detection
+    // DM: 5s delay, reset on typing, max 30s
+    // Group: 30s window per user (batches by chatId:userId)
+    this.messageBatcher = new MessageBatcher({
+      dmDelayMs: 5000,
+      groupDelayMs: 30000,
+      maxWaitMs: 30000,
+      onBatchReady: (chatId, messages, senderId, isGroup) => {
+        this._processBatchedMessages(chatId, messages, senderId, isGroup);
+      },
+    });
+
     console.log(`🧬 Core personality loaded (${this.corePrompt.length} chars)`);
     console.log('🌉 GramJS Bridge initialized (Google Gemini 2.5 Pro)');
   }
@@ -2078,13 +2090,64 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
         console.log(`  🎯 Intent detected — processing group message`);
       }
 
-      // Enqueue per-chat (parallel across chats, sequential within same chat)
-      this.chatQueue.enqueue(chatId, async () => {
-        let typingInterval = null;
-        try {
-          if (!this.conversationMgr) {
-            this.conversationMgr = new ConversationManager(null);
+      // Add message to batcher (DM: 5s delay, Group: 30s per user)
+      // DM batching: chatId only, reset on typing, max 30s
+      // Group batching: chatId:userId key, 30s window per user
+      const senderId = String(msg.senderId || peerId);
+      this.messageBatcher.addMessage(chatId, senderId, isGroup, {
+        msg,
+        text,
+        peerId,
+        chatId,
+        isDM,
+        isGroup,
+        isMentioned,
+        imagePath: msg.imagePath || null,
+        filePath: msg.filePath || null,
+        fileName: msg.fileName || null,
+        voicePath: msg.voicePath || null,
+      });
+      return; // Message will be processed when batch is ready
+    });
+
+    console.log('🚀 GramJS Bridge listening for messages');
+    
+    // Register typing event handler for incoming typing indicators
+    this._setupTypingHandler();
+  }
+
+  /**
+   * Handle batched messages - called by MessageBatcher when timer expires
+   */
+  async _processBatchedMessages(chatId, batchMessages, senderId, isGroup) {
+    console.log(`📦 Processing batched messages (${batchMessages.length} messages, isGroup: ${isGroup})`);
+    
+    // Enqueue per-chat (parallel across chats, sequential within same chat)
+    this.chatQueue.enqueue(chatId, async () => {
+      let typingInterval = null;
+      try {
+        if (!this.conversationMgr) {
+          this.conversationMgr = new ConversationManager(null);
+        }
+        
+        // Process each message in the batch and combine content
+        let primaryMsg = null;
+        let primaryPeerId = null;
+        let primaryText = null;
+        let primaryImagePath = null;
+        
+        // Process all messages in batch
+        for (const batchItem of batchMessages) {
+          const msg = batchItem.msg;
+          const text = batchItem.text;
+          
+          if (!primaryMsg) {
+            primaryMsg = msg;
+            primaryPeerId = batchItem.peerId;
+            primaryText = text;
+            primaryImagePath = batchItem.imagePath;
           }
+          
           let userContent = text || '[image]';
 
           // Forward message prefix
@@ -2100,9 +2163,8 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
           let replyContext = null;
           let replyHint = '';
           try {
-            replyContext = await this._getReplyContext(msg, peerId, chatId);
+            replyContext = await this._getReplyContext(msg, primaryPeerId, chatId);
             if (replyContext) {
-              // Check if this message is already in conversation history (avoid double-processing)
               if (this.conversationMgr) {
                 const history = this.conversationMgr.getRawHistory(chatId);
                 const lastMsgs = history.slice(-5);
@@ -2129,14 +2191,14 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
             userContent = `[User sent file: ${msg.fileName} → saved at ${msg.filePath}. Use [TOOL: shell] with python3/openpyxl to read it if needed.]\n${userContent}`;
             console.log(`  📎 File tracked: ${msg.fileName} → ${msg.filePath}`);
           } else if (text && this.lastFilePerChat.has(chatId)) {
-            // If text message comes after a file (within 120s), attach file context
             const lastFile = this.lastFilePerChat.get(chatId);
             if (Date.now() - lastFile.at < 120000) {
               userContent = `[Referring to previously sent file: ${lastFile.name} → saved at ${lastFile.path}. Use [TOOL: shell] with python3/openpyxl to read it.]\n${userContent}`;
               console.log(`  📎 File context attached: ${lastFile.name}`);
             }
           }
-          // Classify topic for this message
+          
+          // Classify topic and add to conversation
           const msgTopic = this.topicMgr.classify(chatId, text || userContent, 'user');
           this.conversationMgr.addMessage(chatId, 'user', userContent, msgTopic);
 
@@ -2149,392 +2211,255 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
             const prevAssistant = [...history].reverse().find(m => m.role === 'assistant');
             this.lessonLearner.checkCorrection(text, prevAssistant?.content, chatId).catch(() => {});
           }
+        }
 
-          // Track current context for auto-async tool calls
-          this._currentPeerId = String(peerId);
-          this._currentChatId = chatId;
+        // Track current context for auto-async tool calls
+        const msg = primaryMsg;
+        const text = primaryText;
+        const peerId = primaryPeerId;
+        const imagePath = primaryImagePath;
+        const isGroupChat = isGroup;
+        
+        this._currentPeerId = String(peerId);
+        this._currentChatId = chatId;
 
-          const systemPrompt = await this._buildSystemPrompt(text || 'image analysis', chatId);
-          console.log(`🧠 Processing: "${(text || '[image]').substring(0, 60)}" from ${msg.senderName}`);
+        const systemPrompt = await this._buildSystemPrompt(text || 'image analysis', chatId);
+        console.log(`🧠 Processing: "${(text || '[image]').substring(0, 60)}" from ${msg.senderName} (batch: ${batchMessages.length})`);
 
-          if (text && isSensitive(text)) {
-            await this.gram.deleteMessage(peerId, msg.message.id);
-          }
+        if (text && isSensitive(text)) {
+          await this.gram.deleteMessage(peerId, msg.message.id);
+        }
 
-          // Start typing indicator with interval (Telegram expires after 5s)
-          await this.gram.setTyping(peerId);
-          typingInterval = setInterval(() => {
-            this.gram.setTyping(peerId).catch(() => {});
-          }, 6000);
+        // Start typing indicator
+        await this.gram.setTyping(peerId);
+        typingInterval = setInterval(() => {
+          this.gram.setTyping(peerId).catch(() => {});
+        }, 6000);
 
-          // Streaming: send placeholder, edit later
-          const useStreaming = this.config.features?.streaming === true;
-          let placeholderMsgId = null;
-          if (useStreaming) {
-            try {
-              const sent = await this.gram.client.sendMessage(peerId, { message: '💭' });
-              placeholderMsgId = sent?.id;
-            } catch {}
-          }
-
-          // Process with timeout protection (90 seconds max)
-          const maxRounds = this.config.tools?.max_rounds || 20;
-          const processStartTime = Date.now();
-          // Include reply hint in query for complexity classification
-          const queryWithReplyHint = replyHint ? `${text || 'image analysis'}${replyHint}` : text || 'image analysis';
-          const processPromise = this._processWithTools(
-            chatId, systemPrompt, imagePath, maxRounds, queryWithReplyHint
-          );
-          const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Processing timeout (180s)')), 180000)
-          );
-          const { responseText: rawResponse, tokensUsed, inputTokens: inTok, outputTokens: outTok } = await Promise.race([processPromise, timeoutPromise])
-            .catch(err => {
-              console.error(`⚠️ Process error: ${err.message}`);
-              if (err.response?.data) console.error(`   📋 Response:`, JSON.stringify(err.response.data).slice(0, 500));
-              return { responseText: `⚠️ Proses timeout atau gagal: ${err.message}. Coba lagi ya!`, tokensUsed: 0, inputTokens: 0, outputTokens: 0 };
-            });
-
-          // Publish response generated event to Mission Control
-          if (this.missionControl) {
-            const durationMs = Date.now() - processStartTime;
-            // Calculate model used based on complexity (same logic as below)
-            const isSimple = (await this._classifyComplexity(queryWithReplyHint, chatId)) === 'simple';
-            const model = isSimple 
-              ? (this.config.models?.simple?.model || 'gemini-2.5-flash')
-              : (this.config.models?.complex?.model || 'gemini-2.5-pro');
-            this.missionControl.onResponseGenerated(
-              (rawResponse || '').length,
-              tokensUsed || 0,
-              durationMs,
-              model
-            ).catch(() => {});
-          }
-
-          let responseText = rawResponse;
-          if (!responseText || !responseText.trim()) {
-            // AI returned empty — ask for a summary instead of showing error
-            console.warn('⚠️ Empty response from AI — requesting summary');
-            try {
-              const summaryResult = await this._callAIWithHistory(chatId, systemPrompt, null,
-                '[System: Kamu baru saja menjalankan beberapa tools tapi belum memberikan respons ke user. Berikan ringkasan singkat dari apa yang sudah kamu lakukan.]');
-              responseText = summaryResult?.text || '';
-            } catch {}
-            if (!responseText || !responseText.trim()) {
-              responseText = 'Proses selesai, tapi tidak ada output. Mau coba lagi dengan instruksi yang lebih spesifik?';
-            }
-          }
-
-          // Extract [REMEMBER:] tags
-          const rememberRegex = /\[REMEMBER:\s*(.+?)\]/gi;
-          let match;
-          let hasMemory = false;
-          while ((match = rememberRegex.exec(responseText)) !== null) {
-            this.memory.addMemory(match[1].trim());
-            hasMemory = true;
-            console.log(`  💾 Auto-remembered: "${match[1].trim()}"`);
-          }
-          responseText = responseText.replace(/\s*\[REMEMBER:\s*.+?\]/gi, '').trim();
-          if (hasMemory && this.rag) this.rag.reindex().catch(() => {});
-
-          // Extract [SCHEDULE: ...] tags — supports JSON format and legacy format
-          const scheduleJsonRegex = /\[SCHEDULE:\s*(\{[\s\S]*?\})\s*\]/gi;
-          const scheduleLegacyRegex = /\[SCHEDULE:\s*([^\{][^\]]*?)\]/i;
-          let schedJsonMatch;
-          while ((schedJsonMatch = scheduleJsonRegex.exec(responseText)) !== null) {
-            try {
-              const spec = JSON.parse(schedJsonMatch[1]);
-              // Parse "at": seconds (relative) or ISO string (absolute)
-              let triggerAt;
-              if (typeof spec.at === 'number') {
-                triggerAt = Date.now() + spec.at * 1000;
-              } else if (typeof spec.at === 'string') {
-                triggerAt = new Date(spec.at).getTime();
-              }
-              if (!triggerAt || isNaN(triggerAt)) {
-                console.warn(`  ⚠️ Invalid schedule time: ${spec.at}`);
-                continue;
-              }
-              this.scheduler.add({
-                peerId: String(peerId), chatId,
-                message: spec.msg || 'Scheduled task',
-                triggerAt,
-                repeatMs: spec.repeat ? spec.repeat * 1000 : null,
-                type: spec.type || 'direct',
-                command: spec.cmd || null,
-                condition: spec.if || null,
-              });
-            } catch (e) {
-              console.warn(`  ⚠️ Invalid SCHEDULE JSON: ${e.message}`);
-            }
-          }
-          // Legacy format fallback: [SCHEDULE: <seconds> | <message>]
-          if (!scheduleJsonRegex.test(responseText)) {
-            const legacyMatch = scheduleLegacyRegex.exec(responseText);
-            if (legacyMatch) {
-              const parts = legacyMatch[1].split('|').map(s => s.trim());
-              const timeSpec = parts[0];
-              let triggerAt;
-              if (/^\d+$/.test(timeSpec)) {
-                triggerAt = Date.now() + parseInt(timeSpec) * 1000;
-              } else {
-                triggerAt = new Date(timeSpec).getTime();
-              }
-              if (triggerAt && !isNaN(triggerAt)) {
-                const repeatSec = parts.length >= 3 && /^repeat:(\d+)$/i.test(parts[1])
-                  ? parseInt(parts[1].match(/\d+/)[0]) : null;
-                const msgIdx = repeatSec ? 2 : 1;
-                this.scheduler.add({
-                  peerId: String(peerId), chatId,
-                  message: parts.slice(msgIdx).join('|').trim() || 'Reminder',
-                  triggerAt,
-                  repeatMs: repeatSec ? repeatSec * 1000 : null,
-                });
-              }
-            }
-          }
-          responseText = responseText.replace(/\s*\[SCHEDULE:\s*(?:\{[\s\S]*?\}|[^\]]*?)\]/gi, '').trim();
-
-          // Extract [ASYNC: {...}] tags — lightweight background tasks
-          const asyncJsonRegex = /\[ASYNC:\s*(\{[\s\S]*?\})\s*\]/gi;
-          let asyncMatch;
-          while ((asyncMatch = asyncJsonRegex.exec(responseText)) !== null) {
-            try {
-              const spec = JSON.parse(asyncMatch[1]);
-              if (spec.cmd) {
-                const taskId = this.asyncTasks.add({
-                  peerId: String(peerId), chatId,
-                  cmd: spec.cmd,
-                  msg: spec.msg || 'Analisis hasil task ini',
-                  if: spec.if || null,
-                  aiAnalysis: spec.ai !== false, // default true
-                  replyTo: msg.message.id,
-                  timeout: (spec.timeout || 120) * 1000,
-                });
-                console.log(`  ⚡ Async task created: [${taskId}] ${spec.cmd.substring(0, 60)}`);
-              }
-            } catch (e) {
-              console.warn(`  ⚠️ Invalid ASYNC JSON: ${e.message}`);
-            }
-          }
-          responseText = responseText.replace(/\s*\[ASYNC:\s*\{[\s\S]*?\}\s*\]/gi, '').trim();
-
-          // Extract [KNOW: {...}] tags — dynamic knowledge base
-          if (this.knowledge) {
-            responseText = this.knowledge.processResponse(responseText);
-          }
-
-          // Extract [PLAN: {...}] and [STEP: {...}] tags — task planner
-          if (this.planner) {
-            responseText = this.planner.processResponse(chatId, responseText);
-          }
-
-          // Extract [SPAWN: type | description] tag — background task
-          const spawnRegex = /\[SPAWN:\s*(code|research|general)\s*\|\s*(.+?)\]/i;
-          const spawnMatch = spawnRegex.exec(responseText);
-          if (spawnMatch && this.taskRunner) {
-            const taskType = spawnMatch[1].toLowerCase();
-            const taskDesc = spawnMatch[2].trim();
-            const taskId = this.taskRunner.spawn({
-              peerId: String(peerId), chatId,
-              description: taskDesc, type: taskType,
-              maxRounds: 5, replyTo: msg.message.id,
-            });
-            responseText = responseText.replace(/\s*\[SPAWN:\s*.+?\]/gi, '').trim();
-            if (!responseText) responseText = `🚀 Task [${taskId}] started: ${taskDesc}`;
-          }
-
-          // Extract [FILE: /path] or [FILE: /path | caption] tags
-          const fileRegex = /\[FILE:\s*([^\|\]]+?)(?:\s*\|\s*([^\]]+?))?\]/gi;
-          let fileMatch;
-          const filesToSend = [];
-          while ((fileMatch = fileRegex.exec(responseText)) !== null) {
-            filesToSend.push({ path: fileMatch[1].trim(), caption: (fileMatch[2] || '').trim() });
-          }
-          responseText = responseText.replace(/\s*\[FILE:\s*[^\]]+\]/gi, '').trim();
-
-          // Extract [STICKER: emoji] tags — send as large single-emoji message
-          const stickerRegex = /\[STICKER:\s*(.+?)\]/gi;
-          let stickerMatch;
-          const stickersToSend = [];
-          while ((stickerMatch = stickerRegex.exec(responseText)) !== null) {
-            stickersToSend.push(stickerMatch[1].trim());
-          }
-          responseText = responseText.replace(/\s*\[STICKER:\s*.+?\]/gi, '').trim();
-
-          // Extract [VOICE: text to speak] tags
-          const voiceRegex = /\[VOICE:\s*(.+?)\]/gi;
-          let voiceMatch;
-          const voicesToSend = [];
-          while ((voiceMatch = voiceRegex.exec(responseText)) !== null) {
-            voicesToSend.push(voiceMatch[1].trim());
-          }
-          responseText = responseText.replace(/\s*\[VOICE:\s*.+?\]/gi, '').trim();
-
-          // Strip any leaked tool tags from response
-          responseText = responseText.replace(/\[TOOL:\s*\w+\][\s\S]*?\[\/TOOL\]/gi, '').trim();
-          responseText = responseText.replace(/\[TOOL:\s*\w+\]\s*/gi, '').trim();
-          responseText = responseText.replace(/\[\/TOOL\]\s*/gi, '').trim();
-
-          // Strip "mau lanjut?" spam — auto-continue enforcement
-          // Remove sentences asking permission to continue (AI should just do it)
-          responseText = responseText.replace(/\n*(?:^|\n).*(?:mau (?:gue |gw |aku )?(?:lanjut|lanjutin|gas|terus)|(?:lanjut|lanjutin|gas) (?:gak|ga|nggak|tidak|ngga)?[?\s]*(?:✨|🚀|💪|🔥)?|tinggal bilang[^.\n]*|mau (?:gue |gw )?(?:selesaiin|kerjain|handle)[^.\n]*\?)\s*$/gmi, '').trim();
-
-          // Mask sshpass passwords in responses
-          responseText = responseText.replace(/sshpass\s+-p\s+'[^']*'/g, "sshpass -p '***'");
-          responseText = responseText.replace(/sshpass\s+-p\s+\S+/g, "sshpass -p ***");
-
-          // Mask any accidentally leaked credentials in response
-          responseText = responseText.replace(/\b(sk-[A-Za-z0-9_-]{10,})\b/g, (m) => m.substring(0, 7) + '...[masked]');
-          responseText = responseText.replace(/\b(AIza[A-Za-z0-9_-]{10,})\b/g, (m) => m.substring(0, 7) + '...[masked]');
-          responseText = responseText.replace(/((?:API_KEY|SECRET|TOKEN|PASSWORD|CONSUMER_KEY|APP_SECRET)\s*[=:]\s*)(\S{8,})/gi, (m, prefix, val) => prefix + val.substring(0, 4) + '...[masked]');
-
-          // Hard limit: strip long encoded/cert/key blocks from response
-          // Catches base64 blobs, PEM certificates, CSRs, etc.
-          responseText = responseText.replace(/-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g, '[content saved to file — not shown in chat]');
-          // Strip any remaining base64-like blocks (40+ chars of base64 per line, 5+ lines)
-          responseText = responseText.replace(/(?:^[A-Za-z0-9+\/=]{40,}\n){5,}/gm, '[...long encoded content truncated...]\n');
-          // Long responses: split into multiple messages (Telegram limit ~4096 chars)
-          // Splitting is handled below in the send logic
-
-          // Stop typing indicator before sending response
-          clearInterval(typingInterval);
-
-          const finalTopic = this.topicMgr ? this.topicMgr.getActiveTopic(chatId) : null;
-          this.conversationMgr.addMessage(chatId, 'assistant', responseText, finalTopic);
-
-          // Reply logic:
-          // - DM: no reply (plain message) UNLESS there are queued messages for this chat
-          // - Group: always reply to the original message
-          let replyTo = null;
-          if (isGroup) {
-            replyTo = msg.message.id; // Group: always reply
-          } else {
-            // DM: reply only if there are more messages waiting in queue
-            const chatState = this.chatQueue.chats.get(chatId);
-            if (chatState && chatState.queue.length > 0) {
-              replyTo = msg.message.id; // Queue has more → reply so user knows which msg this answers
-            }
-          }
-
-          if (responseText) {
-            console.log(`  📨 Sending response (${responseText.length} chars)...`);
-            try {
-              const MAX_TG_LEN = 4000; // safe limit under Telegram's 4096
-              if (responseText.length <= MAX_TG_LEN) {
-                // Short enough: send as single message
-                if (placeholderMsgId) {
-                  await this.gram.editMessage(peerId, placeholderMsgId, responseText);
-                } else {
-                  await this.gram.sendMessage(peerId, responseText, replyTo);
-                }
-              } else {
-                // Split into chunks at paragraph/newline boundaries
-                const chunks = [];
-                let remaining = responseText;
-                while (remaining.length > 0) {
-                  if (remaining.length <= MAX_TG_LEN) {
-                    chunks.push(remaining);
-                    break;
-                  }
-                  // Find best split point: double newline > single newline > space
-                  let splitAt = remaining.lastIndexOf('\n\n', MAX_TG_LEN);
-                  if (splitAt < MAX_TG_LEN * 0.3) splitAt = remaining.lastIndexOf('\n', MAX_TG_LEN);
-                  if (splitAt < MAX_TG_LEN * 0.3) splitAt = remaining.lastIndexOf(' ', MAX_TG_LEN);
-                  if (splitAt < MAX_TG_LEN * 0.3) splitAt = MAX_TG_LEN;
-                  chunks.push(remaining.substring(0, splitAt));
-                  remaining = remaining.substring(splitAt).trimStart();
-                }
-                console.log(`  📨 Split into ${chunks.length} messages`);
-                // First chunk: edit placeholder or send with reply
-                if (placeholderMsgId) {
-                  await this.gram.editMessage(peerId, placeholderMsgId, chunks[0]);
-                } else {
-                  await this.gram.sendMessage(peerId, chunks[0], replyTo);
-                }
-                // Remaining chunks: send sequentially
-                for (let i = 1; i < chunks.length; i++) {
-                  await new Promise(r => setTimeout(r, 300)); // small delay to maintain order
-                  await this.gram.sendMessage(peerId, chunks[i]);
-                }
-              }
-            } catch (sendErr) {
-              console.error(`  ❌ Send failed: ${sendErr.message}`);
-              try {
-                await this.gram.sendMessage(peerId, responseText.substring(0, 4000), replyTo);
-              } catch (e2) {
-                console.error(`  ❌ Emergency send also failed: ${e2.message}`);
-              }
-            }
-          } else if (placeholderMsgId) {
-            // No text response, delete placeholder
-            try { await this.gram.deleteMessage(peerId, placeholderMsgId); } catch {}
-          }
-
-          // Send sticker emojis
-          for (const emoji of stickersToSend) {
-            try {
-              await this.gram.sendMessage(peerId, emoji, replyTo);
-            } catch {}
-          }
-
-          // Send files
-          for (const f of filesToSend) {
-            if (fs.existsSync(f.path)) {
-              await this.gram.sendFile(peerId, f.path, f.caption, replyTo);
-              console.log(`  📎 Sent file: ${f.path}`);
-            } else {
-              console.warn(`  ⚠️ File not found: ${f.path}`);
-            }
-          }
-
-          // Send voice notes via TTS
-          for (const voiceText of voicesToSend) {
-            try {
-              const tmpFile = `/tmp/tts_${Date.now()}.mp3`;
-              execSync(`gtts-cli "${voiceText.replace(/"/g, '\\"')}" --lang id --output ${tmpFile}`, { timeout: 15000 });
-              await this.gram.sendVoice(peerId, tmpFile, replyTo);
-              fs.unlinkSync(tmpFile);
-              console.log(`  🎤 Sent voice: "${voiceText.substring(0, 40)}"`);
-            } catch (err) {
-              console.error(`  ❌ TTS failed: ${err.message}`);
-              await this.gram.sendMessage(peerId, voiceText, replyTo);
-            }
-          }
-
-          const usedCfg = (await this._classifyComplexity(text)) === 'simple'
-            ? (this.config.models?.simple || { model: 'gemini-2.5-flash' })
-            : (this.config.models?.complex || { model: 'gemini-2.5-pro' });
-          this.stats.record(msg.senderId || msg.message.senderId, msg.senderName, tokensUsed || 0, usedCfg.model, inTok || 0, outTok || 0);
-          
-          // Update Mission Control state with token count
-          if (this.missionControl) {
-            const todayData = this.stats.getTodayData();
-            this.missionControl.updateState({
-              tokensToday: todayData.totalTokens || 0,
-              activeChats: this.chatQueue ? this.chatQueue.chats.size : 0,
-            }).catch(() => {});
-          }
-          
-          const memStats = this.autoMemory?.getStats() || { todayCount: 0 };
-          const lessonStats = this.lessonLearner?.getStats() || { total: 0 };
-          console.log(`✅ Responded to ${msg.senderName} (${tokensUsed || '?'} tokens)${replyTo ? ' [reply]' : ''} | 📝 AutoMemory: ${memStats.todayCount} today | 🎓 Lessons: ${lessonStats.total} total`);
-        } catch (err) {
-          if (typingInterval) clearInterval(typingInterval);
-          console.error('❌ Bridge error:', err.message);
-          
-          // Publish error to Mission Control
-          if (this.missionControl) {
-            this.missionControl.onError('bridge', err.message).catch(() => {});
-          }
-          
+        // Streaming placeholder
+        const useStreaming = this.config.features?.streaming === true;
+        let placeholderMsgId = null;
+        if (useStreaming) {
           try {
-            await this.gram.sendMessage(peerId, '⚠️ Sorry, ada error. Coba lagi ya.', msg.message.id);
+            const sent = await this.gram.client.sendMessage(peerId, { message: '💭' });
+            placeholderMsgId = sent?.id;
           } catch {}
         }
-      });
-    });
 
-    console.log('🚀 GramJS Bridge listening for messages');
+        // Process with timeout
+        const maxRounds = this.config.tools?.max_rounds || 20;
+        const processStartTime = Date.now();
+        const queryWithReplyHint = replyHint ? `${text || 'image analysis'}${replyHint}` : text || 'image analysis';
+        const processPromise = this._processWithTools(chatId, systemPrompt, imagePath, maxRounds, queryWithReplyHint);
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Processing timeout (180s)')), 180000)
+        );
+        const { responseText: rawResponse, tokensUsed, inputTokens: inTok, outputTokens: outTok } = await Promise.race([processPromise, timeoutPromise])
+          .catch(err => {
+            console.error(`⚠️ Process error: ${err.message}`);
+            return { responseText: `⚠️ Proses timeout atau gagal: ${err.message}. Coba lagi ya!`, tokensUsed: 0, inputTokens: 0, outputTokens: 0 };
+          });
+
+        // Mission Control event
+        if (this.missionControl) {
+          const durationMs = Date.now() - processStartTime;
+          const isSimple = (await this._classifyComplexity(queryWithReplyHint, chatId)) === 'simple';
+          const model = isSimple 
+            ? (this.config.models?.simple?.model || 'gemini-2.5-flash')
+            : (this.config.models?.complex?.model || 'gemini-2.5-pro');
+          this.missionControl.onResponseGenerated((rawResponse || '').length, tokensUsed || 0, durationMs, model).catch(() => {});
+        }
+
+        let responseText = rawResponse;
+        if (!responseText || !responseText.trim()) {
+          console.warn('⚠️ Empty response from AI — requesting summary');
+          try {
+            const summaryResult = await this._callAIWithHistory(chatId, systemPrompt, null,
+              '[System: Kamu baru saja menjalankan beberapa tools tapi belum memberikan respons ke user. Berikan ringkasan singkat dari apa yang sudah kamu lakukan.]');
+            responseText = summaryResult?.text || '';
+          } catch {}
+          if (!responseText || !responseText.trim()) {
+            responseText = 'Proses selesai, tapi tidak ada output. Mau coba lagi dengan instruksi yang lebih spesifik?';
+          }
+        }
+
+        // Extract [REMEMBER:] tags
+        const rememberRegex = /\[REMEMBER:\s*(.+?)\]/gi;
+        let match;
+        let hasMemory = false;
+        while ((match = rememberRegex.exec(responseText)) !== null) {
+          this.memory.addMemory(match[1].trim());
+          hasMemory = true;
+          console.log(`  💾 Auto-remembered: "${match[1].trim()}"`);
+        }
+        responseText = responseText.replace(/\s*\[REMEMBER:\s*.+?\]/gi, '').trim();
+        if (hasMemory && this.rag) this.rag.reindex().catch(() => {});
+
+        // Extract [SCHEDULE:] tags
+        const scheduleJsonRegex = /\[SCHEDULE:\s*(\{[\s\S]*?\})\s*\]/gi;
+        const scheduleLegacyRegex = /\[SCHEDULE:\s*([^\{][^\]]*?)\]/i;
+        let schedJsonMatch;
+        while ((schedJsonMatch = scheduleJsonRegex.exec(responseText)) !== null) {
+          try {
+            const spec = JSON.parse(schedJsonMatch[1]);
+            let triggerAt;
+            if (typeof spec.at === 'number') {
+              triggerAt = Date.now() + spec.at * 1000;
+            } else {
+              triggerAt = new Date(spec.at).getTime();
+            }
+            const jobId = await this.scheduler.schedule({
+              triggerAt,
+              type: spec.type || 'direct',
+              message: spec.message || spec.msg || '',
+              peerId: String(peerId),
+              chatId: String(chatId),
+              repeatHours: spec.repeat_hours,
+            });
+            console.log(`  ⏰ Scheduled job ${jobId}: ${spec.message || spec.msg}`);
+          } catch (err) {
+            console.warn(`  ⚠️ Schedule parse error: ${err.message}`);
+          }
+        }
+        responseText = responseText.replace(/\[\/SCHEDULE\]/gi, '').trim();
+
+        // Reply logic
+        let replyTo = null;
+        if (isGroupChat) {
+          replyTo = msg.message.id;
+        } else {
+          const chatState = this.chatQueue.chats.get(chatId);
+          if (chatState && chatState.queue.length > 0) {
+            replyTo = msg.message.id;
+          }
+        }
+
+        if (responseText) {
+          console.log(`  📨 Sending response (${responseText.length} chars)...`);
+          try {
+            const MAX_TG_LEN = 4000;
+            if (responseText.length <= MAX_TG_LEN) {
+              if (placeholderMsgId) {
+                await this.gram.editMessage(peerId, placeholderMsgId, responseText);
+              } else {
+                await this.gram.sendMessage(peerId, responseText, replyTo);
+              }
+            } else {
+              const chunks = [];
+              let remaining = responseText;
+              while (remaining.length > 0) {
+                if (remaining.length <= MAX_TG_LEN) {
+                  chunks.push(remaining);
+                  break;
+                }
+                let splitAt = remaining.lastIndexOf('\n\n', MAX_TG_LEN);
+                if (splitAt < MAX_TG_LEN * 0.3) splitAt = remaining.lastIndexOf('\n', MAX_TG_LEN);
+                if (splitAt < MAX_TG_LEN * 0.3) splitAt = remaining.lastIndexOf(' ', MAX_TG_LEN);
+                if (splitAt < MAX_TG_LEN * 0.3) splitAt = MAX_TG_LEN;
+                chunks.push(remaining.substring(0, splitAt));
+                remaining = remaining.substring(splitAt).trimStart();
+              }
+              console.log(`  📨 Split into ${chunks.length} messages`);
+              if (placeholderMsgId) {
+                await this.gram.editMessage(peerId, placeholderMsgId, chunks[0]);
+              } else {
+                await this.gram.sendMessage(peerId, chunks[0], replyTo);
+              }
+              for (let i = 1; i < chunks.length; i++) {
+                await new Promise(r => setTimeout(r, 300));
+                await this.gram.sendMessage(peerId, chunks[i]);
+              }
+            }
+          } catch (sendErr) {
+            console.error(`  ❌ Send failed: ${sendErr.message}`);
+            try { await this.gram.sendMessage(peerId, responseText.substring(0, 4000), replyTo); } catch (e2) {}
+          }
+        }
+
+        // Stop typing
+        if (typingInterval) clearInterval(typingInterval);
+
+        // Stats
+        const usedCfg = (await this._classifyComplexity(queryWithReplyHint, chatId)) === 'simple'
+          ? (this.config.models?.simple || { model: 'gemini-2.5-flash' })
+          : (this.config.models?.complex || { model: 'gemini-2.5-pro' });
+        this.stats.record(msg.senderId || msg.message.senderId, msg.senderName, tokensUsed || 0, usedCfg.model, inTok || 0, outTok || 0);
+        
+        if (this.missionControl) {
+          const todayData = this.stats.getTodayData();
+          this.missionControl.updateState({
+            tokensToday: todayData.totalTokens || 0,
+            activeChats: this.chatQueue ? this.chatQueue.chats.size : 0,
+          }).catch(() => {});
+        }
+        
+        const memStats = this.autoMemory?.getStats() || { todayCount: 0 };
+        const lessonStats = this.lessonLearner?.getStats() || { total: 0 };
+        console.log(`✅ Responded to ${msg.senderName} (${tokensUsed || '?'} tokens)${replyTo ? ' [reply]' : ''} | 📝 AutoMemory: ${memStats.todayCount} today | 🎓 Lessons: ${lessonStats.total} total`);
+      } catch (err) {
+        if (typingInterval) clearInterval(typingInterval);
+        console.error('❌ Bridge error:', err.message);
+        
+        if (this.missionControl) {
+          this.missionControl.onError('bridge', err.message).catch(() => {});
+        }
+        
+        try {
+          await this.gram.sendMessage(peerId, '⚠️ Sorry, ada error. Coba lagi ya.', msg.message.id);
+        } catch {}
+      }
+    });
+  }
+
+  /**
+   * Set up typing event handler to detect typing indicators
+   */
+  _setupTypingHandler() {
+    if (!this.gram?.client) {
+      console.warn('⚠️ GramJS client not ready for typing handler');
+      return;
+    }
+
+    const { Raw } = require('telegram/events/index.js');
+    
+    this.gram.client.addEventHandler(async (update) => {
+      try {
+        const updateClass = update.className;
+        
+        if (updateClass === 'UpdateUserTyping' || updateClass === 'UpdateChatUserTyping') {
+          let chatId, userId;
+          
+          if (updateClass === 'UpdateUserTyping') {
+            chatId = update.userId ? String(update.userId) : null;
+            userId = update.userId ? String(update.userId) : null;
+          } else {
+            chatId = update.chatId ? String(update.chatId) : null;
+            userId = update.userId ? String(update.userId) : null;
+          }
+          
+          if (!chatId || !userId) return;
+          
+          const action = update.action?.className || '';
+          const trackedActions = [
+            'SendMessageTypingAction',
+            'SendMessageRecordAudioAction', 
+            'SendMessageUploadPhotoAction',
+            'SendMessageRecordVideoAction',
+            'SendMessageChooseStickerAction',
+          ];
+          
+          if (trackedActions.includes(action)) {
+            // Determine if this is a group chat (check if UpdateChatUserTyping)
+            const isGroup = updateClass === 'UpdateChatUserTyping';
+            console.log(`  ⌨️ Typing: ${action} from ${userId} in ${chatId} (group: ${isGroup})`);
+            this.messageBatcher.onTyping(chatId, userId, isGroup);
+          }
+        }
+      } catch (err) {
+        // Silently ignore
+      }
+    }, new Raw({}));
+
+    console.log('👁️ Typing event handler registered');
   }
 }
