@@ -1,6 +1,6 @@
 # MetaClaw 🐾
 
-![Version](https://img.shields.io/badge/version-2.0.0-blue)
+![Version](https://img.shields.io/badge/version-2.2.0-blue)
 [![Discord](https://img.shields.io/discord/123456789?label=discord)](https://discord.gg/metaclaw)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -18,9 +18,31 @@ Personal AI assistant running on Telegram via GramJS (MTProto).
 - 💬 **Conversation Persistence** — History with embedding-based relevance filtering & auto-compaction
 - 🗂️ **Per-chatId Storage** — Isolated per-chat conversation files with legacy migration
 
+### Native Tools (16 Built-in)
+All actions use **native function calling** — no text-based tags. Available tools:
+
+| Category | Tools |
+|----------|-------|
+| **Execution** | `shell`, `async_shell` |
+| **Web** | `search`, `fetch` |
+| **Files** | `read`, `write`, `ls` |
+| **Media** | `image` |
+| **Scheduling** | `schedule` |
+| **Agents** | `spawn_subagent` |
+| **Knowledge** | `knowledge`, `remember` |
+| **Communication** | `send_file`, `send_voice`, `send_sticker` |
+| **Planning** | `task_plan` |
+
+**Skill Tools** — Additional tools registered by loaded skills (e.g., browser, weather).
+**Instance Tools** — Cross-instance tools: `delegate_task`, `list_instances`, `get_instance_status`, `publish_event`.
+
 ### Sub-Agents
 - 🤖 **Autonomous AI Workers** — Spawn background agents that plan & execute goals independently
-- 📋 **Planning Phase** — Dual-model: expensive model plans, cheap model executes
+- 📋 **Planning Phase** — Dual-model: Opus 4.6 plans, MiniMax M2.5 executes
+- ⏱️ **Configurable Turns** — Max 200 turns per task (configurable via `tools.max_rounds`)
+- ⌛ **Timeout** — 60-minute timeout for long-running tasks
+- 🔄 **Auto-Retry** — Automatic retry on transient errors (3 retries, 10-30s backoff)
+- 📊 **Progress Reporting** — Status updates every 5 turns
 - 🧠 **Knowledge Scoping** — Sub-agents query only relevant knowledge, not entire context
 - 💬 **Communication** — Progress reports, mid-task clarification, abort support
 - ⚡ **Background Tasks** — Sub-agents delegate long commands to AsyncTaskManager (0 tokens)
@@ -64,6 +86,7 @@ Personal AI assistant running on Telegram via GramJS (MTProto).
 - 📊 **Stats & Cost Tracking** — /stats, /dailyusage with $ estimates
 - 🔄 **Model Fallback** — Auto-switch provider on failure
 - 💾 **Everything Persists** — Conversations, schedules, sessions, sub-agent state
+- 🔁 **Auto-Retry** — Automatic retry on transient API errors (529, 502, 503, rate limits, timeouts) for both main chat and SubAgent calls (3 retries, 10-30s exponential backoff)
 
 ## Requirements
 - **OS:** Linux (Ubuntu 22.04+ recommended)
@@ -234,7 +257,7 @@ skills/                    # Pluggable skills
 ├── browser/               # Browser automation (MetaPower/Puppeteer)
 └── ...
 
-personality/               # SOUL.md, IDENTITY.md
+personality/               # SOUL.md, IDENTITY.md, MY_RULES.md (instance-specific learned rules via LessonLearner)
 workspace/                 # Working directory + HEARTBEAT.md
 data/                      # Sessions, stats, conversations, state
 ```
@@ -253,6 +276,8 @@ models:
 
 tools:
   max_rounds: 20
+
+debug: false  # Set to true for AI request/response dumps
 
 workspace:
   path: ./workspace
