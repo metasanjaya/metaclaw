@@ -13,6 +13,7 @@ import {
   AnthropicProvider,
   GoogleProvider,
   OpenAICompatibleProvider,
+  MiniMaxProvider,
 } from './providers/index.js';
 
 // Auto-detect provider from model name
@@ -25,6 +26,7 @@ const MODEL_PROVIDER_MAP = {
   'grok-': 'grok',
   'deepseek-': 'deepseek',
   'glm-': 'zai',
+  'MiniMax-': 'minimax',
 };
 
 function detectProvider(model) {
@@ -108,6 +110,16 @@ If a simple answer suffices, give it without elaboration.`;
     if (zaiKey) {
       this.providers.zai = new OpenAICompatibleProvider('zai', { apiKey: zaiKey });
       console.log('✅ Z.AI initialized');
+    }
+
+    // MiniMax - Anthropic-compatible
+    const minimaxKey = remoteProviders.minimax?.api_key || process.env.MINIMAX_API_KEY;
+    if (minimaxKey) {
+      this.providers.minimax = new MiniMaxProvider({
+        apiKey: minimaxKey,
+        baseURL: remoteProviders.minimax?.baseURL
+      });
+      console.log('✅ MiniMax initialized');
     }
   }
 
