@@ -1,0 +1,127 @@
+# How Personality & Memory Works
+
+## 🧠 Token-Efficient Memory System
+
+MetaClaw uses **smart memory retrieval** to save tokens while staying context-aware!
+
+### How It Works
+
+```
+User Input
+    ↓
+Keyword Extraction
+    ↓
+Memory Search (keyword matching)
+    ↓
+Relevance Scoring
+    ↓
+Top 2-3 Snippets Only! ← TOKEN EFFICIENT!
+    ↓
+Add to LLM Prompt
+    ↓
+Generate Response
+    ↓
+Remember Interaction
+```
+
+### Memory Files
+
+1. **MEMORY.md** - Long-term curated memory
+   - Important decisions, project context, lessons learned
+
+2. **memory/YYYY-MM-DD.md** - Daily logs
+   - Interactions by date, compact format, auto-created
+
+3. **SOUL.md** - Personality core
+   - Tone, vibe, communication style
+
+4. **IDENTITY.md** - Who am I?
+   - Name, emoji, capabilities
+
+5. **USER.md** - About the owner
+   - Basic info, preferences, notes
+
+---
+
+## 🔍 Memory Search Example
+
+### User asks: "How do I deploy the project?"
+
+**Step 1: Extract keywords**
+```
+Keywords: ['deploy', 'project']
+```
+
+**Step 2: Search MEMORY.md**
+```
+Found in MEMORY.md line 42:
+"Project deployed to staging server via SSH"
+Score: 2 (both keywords matched)
+```
+
+**Step 3: Search recent daily logs**
+```
+Found in memory/2026-02-10.md line 78:
+"Deployed successfully, database migrated"
+Score: 1 (deploy matched)
+```
+
+**Step 4: Sort by relevance, take top 2**
+
+**Token usage: ~50 tokens instead of 500+!**
+
+---
+
+## 📝 Memory Writing
+
+Every interaction is logged automatically:
+
+```markdown
+## 19:26 - LLM Query
+**Input**: How do I deploy the project?
+**Summary**: Deployed via SSH, database migrated...
+**Tokens**: 85
+---
+```
+
+Compact format = token-efficient retrieval later!
+
+---
+
+## 🎯 Memory Best Practices
+
+### Do:
+- ✅ Keep daily logs concise
+- ✅ Update MEMORY.md with important learnings
+- ✅ Use keywords for searchability
+- ✅ Write summaries, not full conversations
+
+### Don't:
+- ❌ Log every tiny interaction
+- ❌ Repeat information across files
+- ❌ Store sensitive data (passwords, keys)
+- ❌ Make memory files huge
+
+---
+
+## 🔧 Customization
+
+### Change personality:
+- `personality/SOUL.md` - Tone and vibe
+- `personality/IDENTITY.md` - Name, emoji, persona
+- `personality/USER.md` - About the owner
+
+### Or re-run the setup wizard:
+```bash
+npm run setup
+```
+
+---
+
+## 🚀 Result
+
+- 💚 Human-like responses
+- 🧠 Context-aware (remembers conversations)
+- ⚡ Token-efficient (only load relevant memory)
+- 📝 Auto-logging interactions
+- 🎯 Personalized tone
