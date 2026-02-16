@@ -13,6 +13,7 @@ const ModelSchema = z.object({
 });
 
 const ConfigSchema = z.object({
+  debug: z.boolean().optional().default(false),
   gramjs: z.object({
     api_id: z.number(),
     api_hash: z.string().min(1),
