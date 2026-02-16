@@ -973,8 +973,8 @@ Selamat menggunakan! ✨`;
         peerId: String(peerId),
         chatId,
         replyTo: messageId,
-        executorModel: this.config.models?.simple?.model || 'claude-sonnet-4-5',
-        plannerModel: this.config.models?.complex?.model || 'claude-opus-4-6',
+        executorModel: `${this.config.models?.simple?.provider || 'anthropic'}/${this.config.models?.simple?.model || 'claude-sonnet-4-5'}`,
+        plannerModel: `${this.config.models?.simple?.provider || 'anthropic'}/${this.config.models?.simple?.model || 'claude-sonnet-4-5'}`,
       });
       await this.gram.sendMessage(peerId, `🤖 SubAgent [${taskId}] spawned: "${goal}"`, messageId);
       return true;
@@ -1796,8 +1796,8 @@ Message: "${text.substring(0, 200)}"`;
             peerId: String(peerId),
             chatId,
             replyTo: this._currentMessageId,
-            executorModel: this.config.models?.simple?.model || 'claude-sonnet-4-5',
-            plannerModel: this.config.models?.complex?.model || 'claude-opus-4-6',
+            executorModel: `${this.config.models?.simple?.provider || 'anthropic'}/${this.config.models?.simple?.model || 'claude-sonnet-4-5'}`,
+            plannerModel: `${this.config.models?.simple?.provider || 'anthropic'}/${this.config.models?.simple?.model || 'claude-sonnet-4-5'}`,
           });
           return `✅ SubAgent spawned [${taskId}]\nGoal: "${goal}"\nType: ${toolInput.type || 'general'}\nStatus: running in background. Will report back when done.`;
         }
