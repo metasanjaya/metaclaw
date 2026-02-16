@@ -190,7 +190,7 @@ export class AnthropicProvider extends BaseProvider {
       );
 
       const data = response.data;
-      console.log(`  🔍 Anthropic raw response: stop_reason=${data.stop_reason}, content_blocks=${data.content?.length}, usage=${JSON.stringify(data.usage)}`);
+      if (this.config?.debug) console.log(`  🔍 Anthropic raw response: stop_reason=${data.stop_reason}, content_blocks=${data.content?.length}, usage=${JSON.stringify(data.usage)}`);
       if (data.content) {
         for (const b of data.content) {
           console.log(`    📦 Block: type=${b.type}${b.type === 'tool_use' ? `, name=${b.name}` : ''}${b.type === 'text' ? `, text=${(b.text||'').substring(0,60)}` : ''}`);

@@ -1504,24 +1504,26 @@ Message: "${text.substring(0, 200)}"`;
     const reduction = rawTotalBytes > 0 ? ((1 - totalBytes / rawTotalBytes) * 100).toFixed(0) : 0;
     console.log(`  📊 AI Input: ${(totalBytes / 1024).toFixed(1)}KB sent (system: ${(systemBytes / 1024).toFixed(1)}KB + history: ${(historyBytes / 1024).toFixed(1)}KB) | Raw: ${(rawTotalBytes / 1024).toFixed(1)}KB → ${(totalBytes / 1024).toFixed(1)}KB (${reduction}% reduced) | ${rawHistory.length} → ${messages.length - 1} msgs | ~${estTokens} tokens est`);
 
-    // Dump full AI request to file for debugging
-    try {
-      const debugDir = path.join(__dirname, '../../data/debug');
-      if (!fs.existsSync(debugDir)) fs.mkdirSync(debugDir, { recursive: true });
-      const ts = new Date().toISOString().replace(/[:.]/g, '-');
-      const debugPayload = messages.map((m, i) => ({
-        idx: i,
-        role: m.role,
-        chars: (m.content || '').length,
-        content: m.content,
-      }));
-      fs.writeFileSync(
-        path.join(debugDir, `ai-request-${ts}.json`),
-        JSON.stringify({ chatId, currentQuery, timestamp: new Date().toISOString(), toolCount: tools?.length || 0, tools: (tools || []).map(t => t.name || t.function?.name || 'unknown'), messages: debugPayload }, null, 2),
-        'utf-8'
-      );
-      console.log(`  🔍 Debug: AI request dumped to data/debug/ai-request-${ts}.json`);
-    } catch (e) { console.warn(`  ⚠️ Debug dump failed: ${e.message}`); }
+    // Dump full AI request to file for debugging (config.debug: true)
+    if (this.config.debug) {
+      try {
+        const debugDir = path.join(__dirname, '../../data/debug');
+        if (!fs.existsSync(debugDir)) fs.mkdirSync(debugDir, { recursive: true });
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        const debugPayload = messages.map((m, i) => ({
+          idx: i,
+          role: m.role,
+          chars: (m.content || '').length,
+          content: m.content,
+        }));
+        fs.writeFileSync(
+          path.join(debugDir, `ai-request-${ts}.json`),
+          JSON.stringify({ chatId, currentQuery, timestamp: new Date().toISOString(), toolCount: tools?.length || 0, tools: (tools || []).map(t => t.name || t.function?.name || 'unknown'), messages: debugPayload }, null, 2),
+          'utf-8'
+        );
+        console.log(`  🔍 Debug: AI request dumped to data/debug/ai-request-${ts}.json`);
+      } catch (e) { console.warn(`  ⚠️ Debug dump failed: ${e.message}`); }
+    }
 
     // Smart model routing based on complexity
     const complexity = await this._classifyComplexity(currentQuery || messages[messages.length - 1]?.content, chatId);

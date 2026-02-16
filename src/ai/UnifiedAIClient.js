@@ -80,7 +80,7 @@ If a simple answer suffices, give it without elaboration.`;
     // Anthropic
     const anthropicKey = remoteProviders.anthropic?.api_key || process.env.ANTHROPIC_API_KEY;
     if (anthropicKey) {
-      this.providers.anthropic = new AnthropicProvider({ apiKey: anthropicKey });
+      this.providers.anthropic = new AnthropicProvider({ apiKey: anthropicKey, debug: config.debug });
       console.log('✅ Anthropic (Claude) initialized');
     }
 
