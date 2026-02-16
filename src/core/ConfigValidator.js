@@ -6,7 +6,7 @@
 import { z } from 'zod';
 
 const ModelSchema = z.object({
-  provider: z.enum(['anthropic', 'openai', 'google', 'ollama']),
+  provider: z.enum(['anthropic', 'openai', 'google', 'ollama', 'minimax']),
   model: z.string().min(1),
   maxTokens: z.number().positive().optional(),
   reasoning: z.enum(['low', 'medium', 'high']).optional(),
@@ -61,7 +61,17 @@ const ConfigSchema = z.object({
     max_tool_rounds: z.number().positive().optional(),
     blocked_commands: z.array(z.string()).optional(),
   }).optional(),
-});
+
+  llm: z.object({
+    remote: z.object({
+      providers: z.record(z.object({
+        api_key: z.string().min(1),
+        base_url: z.string().optional(),
+      })).optional(),
+    }).optional(),
+    local: z.any().optional(),
+  }).optional(),
+}).passthrough();
 
 export function validateConfig(config) {
   const result = ConfigSchema.safeParse(config);

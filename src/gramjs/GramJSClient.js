@@ -411,8 +411,49 @@ export class GramJSClient {
     }
   }
 
+  async _resolveEntity(chatId) {
+    // Try direct first, then resolve via API if entity not cached
+    try {
+      await this.client.getInputEntity(chatId);
+      return chatId;
+    } catch {
+      console.log(`  🔍 Resolving entity for ${chatId}...`);
+      // Entity not in cache — try resolving
+      try {
+        // Try as username string (most reliable for uncached users)
+        const str = String(chatId).replace(/^@/, '');
+        if (str && !/^\d+$/.test(str)) {
+          const entity = await this.client.getEntity(str);
+          if (entity) { console.log(`  ✅ Resolved via username: ${str}`); return entity; }
+        }
+      } catch {}
+      try {
+        // If numeric, try via contacts.resolveUsername won't work — try search
+        const numId = Number(chatId);
+        if (!isNaN(numId) && numId > 0) {
+          // Use getEntity with Api.PeerUser
+          const entity = await this.client.getEntity(new Api.PeerUser({ userId: numId }));
+          if (entity) { console.log(`  ✅ Resolved via PeerUser: ${numId}`); return entity; }
+        }
+      } catch {}
+      try {
+        // Last attempt: search contacts
+        const result = await this.client.invoke(new Api.contacts.Search({ q: String(chatId), limit: 1 }));
+        if (result.users?.length > 0) {
+          console.log(`  ✅ Resolved via contacts search: ${result.users[0].username || result.users[0].id}`);
+          return result.users[0];
+        }
+      } catch {}
+      console.warn(`  ⚠️ Could not resolve entity for ${chatId}`);
+      return chatId;
+    }
+  }
+
   async sendMessage(chatId, text, replyTo = null) {
     try {
+      // Resolve entity (handles users we haven't chatted with before)
+      const peer = await this._resolveEntity(chatId);
+
       // Telegram limit: 4096 chars per message — split if needed
       const MAX_LEN = 4000; // slightly under limit for safety
       const parts = [];
@@ -433,7 +474,7 @@ export class GramJSClient {
         const params = { message: parts[i] };
         // Only reply to original on first part
         if (replyTo && i === 0) params.replyTo = replyTo;
-        await this.client.sendMessage(chatId, params);
+        await this.client.sendMessage(peer, params);
         // Small delay between parts to avoid flood
         if (i < parts.length - 1) await new Promise(r => setTimeout(r, 500));
       }
@@ -445,7 +486,7 @@ export class GramJSClient {
         console.log(`⏳ Flood wait: ${err.seconds}s`);
         await new Promise(r => setTimeout(r, err.seconds * 1000 + 1000));
         try {
-          await this.client.sendMessage(chatId, { message: text.substring(0, 4000), replyTo });
+          await this.client.sendMessage(peer || chatId, { message: text.substring(0, 4000), replyTo });
         } catch {}
       }
     }
