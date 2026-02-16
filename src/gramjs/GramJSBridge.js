@@ -1420,6 +1420,14 @@ Message: "${text.substring(0, 200)}"`;
           repeat_hours: { type: "number", description: "Repeat interval in hours (optional, for recurring jobs)" },
           job_id: { type: "string", description: "Job ID to remove (required for remove)" }
         }
+      },
+      {
+        name: "spawn_subagent",
+        description: "Spawn a background AI sub-agent for complex, multi-step, or long-running tasks. The sub-agent works autonomously and reports back when done. Use for: code changes, research, file operations, deployments, anything that takes multiple steps.",
+        params: {
+          goal: { type: "string", description: "Clear description of the task to accomplish" },
+          type: { type: "string", description: "Task type: 'code' (coding/file changes), 'research' (web search/analysis), 'general' (other). Default: 'general'" }
+        }
       }
     ];
 
@@ -1714,6 +1722,24 @@ Message: "${text.substring(0, 200)}"`;
           }).join('\n\n');
         }
         
+        case 'spawn_subagent': {
+          if (!this.subAgent) return '❌ SubAgent system not initialized';
+          const goal = toolInput.goal;
+          if (!goal) return 'Error: "goal" is required';
+          const peerId = this._currentPeerId || '';
+          const chatId = this._currentChatId || '';
+          const taskId = await this.subAgent.spawn({
+            goal,
+            type: toolInput.type || 'general',
+            peerId: String(peerId),
+            chatId,
+            replyTo: this._currentMessageId,
+            executorModel: this.config.models?.simple?.model || 'claude-sonnet-4-5',
+            plannerModel: this.config.models?.complex?.model || 'claude-opus-4-6',
+          });
+          return `✅ SubAgent spawned [${taskId}]\nGoal: "${goal}"\nType: ${toolInput.type || 'general'}\nStatus: running in background. Will report back when done.`;
+        }
+
         default:
           // Check if it's a skill tool
           if (this.skillMgr && this.skillMgr.isSkillTool(toolName)) {
