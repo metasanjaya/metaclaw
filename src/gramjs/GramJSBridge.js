@@ -2237,23 +2237,25 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
         toolResults.push({ id: tc.id, result: output });
       }
 
-      // Add tool round to isolated history (NOT to conversationMgr)
-      if (result.text) {
-        isolatedHistory.push({ role: 'assistant', content: result.text });
+      // Add tool round to isolated history using native format (NOT text-based)
+      isolatedHistory.push({
+        role: 'assistant',
+        content: result.text || null,
+        tool_calls: result.toolCalls.map(tc => ({
+          id: tc.id,
+          function: {
+            name: tc.name,
+            arguments: typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input),
+          },
+        })),
+      });
+      for (const tr of toolResults) {
+        isolatedHistory.push({
+          role: 'tool',
+          tool_call_id: tr.id,
+          content: typeof tr.result === 'string' ? (tr.result || '').substring(0, 3000) : JSON.stringify(tr.result).substring(0, 3000),
+        });
       }
-      // Add tool calls as assistant message
-      const toolCallSummary = result.toolCalls.map(tc =>
-        `[Tool: ${tc.name}] ${JSON.stringify(tc.input).substring(0, 200)}`
-      ).join('\n');
-      if (!result.text) {
-        isolatedHistory.push({ role: 'assistant', content: toolCallSummary });
-      }
-      // Add tool results as user message
-      const toolResultText = toolResults.map(tr => {
-        const tc = result.toolCalls.find(t => t.id === tr.id);
-        return `[${tc?.name} result]: ${(tr.result || '').substring(0, 2000)}`;
-      }).join('\n\n');
-      isolatedHistory.push({ role: 'user', content: toolResultText });
     }
 
     // Parse response tags before returning (max rounds reached)
