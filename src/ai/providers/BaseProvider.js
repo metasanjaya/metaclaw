@@ -46,6 +46,60 @@ export class BaseProvider {
       provider: this.name,
     };
 
+    // Parse text-based tool calls (MiniMax sometimes outputs tools as text instead of native tool_use)
+    // Patterns: [Tool: name]\n<parameter name="key">value</parameter>  OR  </invoke>\n</minimax:tool_call>
+    if (validated.text && /\[Tool:\s*\w+\]|<parameter\s+name=|<\/minimax:tool_call>|<invoke\s+name=/i.test(validated.text)) {
+      const textToolCalls = [];
+      // Pattern 1: [Tool: name] with <parameter> tags
+      const toolBlockRegex = /\[Tool:\s*(\w+)\]\s*((?:<parameter\s+name="([^"]+)">([^<]*)<\/parameter>\s*)*)/gi;
+      let tbMatch;
+      while ((tbMatch = toolBlockRegex.exec(validated.text)) !== null) {
+        const toolName = tbMatch[1];
+        const paramsBlock = tbMatch[2] || '';
+        const input = {};
+        const paramRegex = /<parameter\s+name="([^"]+)">([^<]*)<\/parameter>/gi;
+        let pMatch;
+        while ((pMatch = paramRegex.exec(paramsBlock)) !== null) {
+          input[pMatch[1]] = pMatch[2];
+        }
+        textToolCalls.push({
+          id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          name: toolName,
+          input,
+        });
+      }
+      // Pattern 2: <invoke name="toolName"><parameter name="key">value</parameter></invoke>
+      const invokeRegex = /<invoke\s+name="(\w+)">((?:<parameter\s+name="([^"]+)">([^<]*)<\/parameter>\s*)*)<\/invoke>/gi;
+      let ivMatch;
+      while ((ivMatch = invokeRegex.exec(validated.text)) !== null) {
+        const toolName = ivMatch[1];
+        const paramsBlock = ivMatch[2] || '';
+        const input = {};
+        const paramRegex = /<parameter\s+name="([^"]+)">([^<]*)<\/parameter>/gi;
+        let pMatch;
+        while ((pMatch = paramRegex.exec(paramsBlock)) !== null) {
+          input[pMatch[1]] = pMatch[2];
+        }
+        textToolCalls.push({
+          id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          name: toolName,
+          input,
+        });
+      }
+      if (textToolCalls.length > 0) {
+        console.log(`  🔧 Parsed ${textToolCalls.length} text-based tool call(s): ${textToolCalls.map(t => t.name).join(', ')}`);
+        if (!raw.toolCalls) raw.toolCalls = [];
+        raw.toolCalls.push(...textToolCalls);
+      }
+      // Strip raw tool XML/tags from text
+      validated.text = validated.text
+        .replace(/\[Tool:\s*\w+\]\s*(?:<parameter\s+name="[^"]*">[^<]*<\/parameter>\s*)*/gi, '')
+        .replace(/<invoke\s+name="[^"]*">(?:<parameter\s+name="[^"]*">[^<]*<\/parameter>\s*)*<\/invoke>/gi, '')
+        .replace(/<\/?minimax:tool_call>/gi, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    }
+
     // Validate toolCalls if present
     if (Array.isArray(raw?.toolCalls) && raw.toolCalls.length > 0) {
       validated.toolCalls = raw.toolCalls
