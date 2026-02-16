@@ -348,21 +348,32 @@ export class SubAgent {
       const { provider, model } = this._parseModel(task.executorModel);
 
       let aiResponse;
-      try {
-        aiResponse = await this.ai.chatWithTools(task.messages, toolDefs, {
-          provider,
-          model,
-          maxTokens: getMaxTokens(model, 16384),
-          temperature: 0.3,
-        });
-      } catch (err) {
-        console.error(`🤖 SubAgent [${taskId}] AI error:`, err.message);
-        task.status = 'failed';
-        task.error = `AI call failed: ${err.message}`;
-        task.completedAt = Date.now();
-        this._persist(task);
-        this._emit(taskId, 'error', err);
-        return;
+      const maxRetries = 3;
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          aiResponse = await this.ai.chatWithTools(task.messages, toolDefs, {
+            provider,
+            model,
+            maxTokens: getMaxTokens(model, 16384),
+            temperature: 0.3,
+          });
+          break; // success
+        } catch (err) {
+          const isRetryable = /529|overload|rate.limit|timeout|ECONNRESET|ETIMEDOUT|503|502/i.test(err.message);
+          if (isRetryable && attempt < maxRetries) {
+            const delay = (attempt + 1) * 10000; // 10s, 20s, 30s
+            console.warn(`🤖 SubAgent [${taskId}] retryable error (attempt ${attempt + 1}/${maxRetries}): ${err.message}. Retrying in ${delay/1000}s...`);
+            await new Promise(r => setTimeout(r, delay));
+            continue;
+          }
+          console.error(`🤖 SubAgent [${taskId}] AI error:`, err.message);
+          task.status = 'failed';
+          task.error = `AI call failed: ${err.message}`;
+          task.completedAt = Date.now();
+          this._persist(task);
+          this._emit(taskId, 'error', err);
+          return;
+        }
       }
 
       task.tokensUsed += aiResponse.tokensUsed || 0;
