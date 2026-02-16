@@ -1,14 +1,22 @@
 # MetaClaw 🐾
 
+![Version](https://img.shields.io/badge/version-2.0.0-blue)
+[![Discord](https://img.shields.io/discord/123456789?label=discord)](https://discord.gg/metaclaw)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 Personal AI assistant running on Telegram via GramJS (MTProto).
 
 ## Features
 
 ### Core
 - 🤖 **Smart AI Chat** — Claude Sonnet 4.5 (simple) + Opus 4.6 (complex) with auto-routing
-- 🔧 **Native Function Calling** — Shell, web search, fetch, file R/W via provider-native tool APIs
+- 🧭 **AI-Powered Routing** — Gemini Flash intent classifier for smart model selection (simple/complex/vision)
+- 📬 **Message Batching** — DM=5s, Group=30s per user, typing detection resets timer
+- ↩️ **Reply Detection** — Context injection from replied messages
+- 🔧 **Native Function Calling** — Shell, web search, file R/W via provider-native tool APIs
 - 🧠 **Memory + RAG** — Auto-memory, semantic search, knowledge base with embeddings
 - 💬 **Conversation Persistence** — History with embedding-based relevance filtering & auto-compaction
+- 🗂️ **Per-chatId Storage** — Isolated per-chat conversation files with legacy migration
 
 ### Sub-Agents
 - 🤖 **Autonomous AI Workers** — Spawn background agents that plan & execute goals independently
@@ -51,6 +59,7 @@ Personal AI assistant running on Telegram via GramJS (MTProto).
 - 👍 **Smart Reactions** — Acknowledgment detection with configurable patterns
 
 ### Infrastructure
+- 🖥️ **Multi-Instance Communication** — Redis pub/sub, delegate_task between instances, entity resolution
 - 🛡️ **Access Control** — Whitelist, auto-reject calls, auto-leave unauthorized groups
 - 📊 **Stats & Cost Tracking** — /stats, /dailyusage with $ estimates
 - 🔄 **Model Fallback** — Auto-switch provider on failure
@@ -211,11 +220,15 @@ src/gramjs/
 ├── StatsTracker.js        # Usage statistics
 ├── MemoryManager.js       # Memory system
 ├── RAGEngine.js           # Retrieval-augmented generation
-└── TopicManager.js        # Conversation topic tracking
+├── TopicManager.js        # Conversation topic tracking
+├── MessageBatcher.js      # Smart message batching
+├── InstanceManager.js     # Multi-instance communication
+├── MissionControlBridge.js # Dashboard integration
+└── AutoMemory.js          # Auto-learning memory
 
 src/ai/
 ├── UnifiedAIClient.js     # Multi-provider AI client
-└── providers/             # Anthropic, Google, OpenAI, etc.
+└── providers/             # Anthropic, Google, OpenAI, MiniMax
 
 skills/                    # Pluggable skills
 ├── browser/               # Browser automation (MetaPower/Puppeteer)
@@ -232,15 +245,11 @@ data/                      # Sessions, stats, conversations, state
 
 ```yaml
 models:
-  simple:
-    provider: anthropic
-    model: claude-sonnet-4-5
-  complex:
-    provider: anthropic
-    model: claude-opus-4-6
-  fallback:
-    provider: google
-    model: gemini-2.5-pro
+  simple: anthropic/claude-opus-4-6
+  complex: minimax/MiniMax-M2.5
+  fallback: google/gemini-2.5-pro
+  intent: google/gemini-2.5-flash
+  vision: google/gemini-2.5-flash
 
 tools:
   max_rounds: 20
@@ -248,6 +257,52 @@ tools:
 workspace:
   path: ./workspace
 ```
+
+## Providers
+
+MetaClaw supports multiple AI providers:
+
+- **Anthropic** — Claude models (Sonnet, Opus)
+- **Google** — Gemini models (Flash, Pro)
+- **OpenAI** — GPT models
+- **MiniMax** — M2.5 for complex/coding tasks
+
+## Multi-Instance
+
+Run multiple MetaClaw instances for different purposes — one for general chat, another for DevOps, another for coding assistance. Each instance operates independently with its own Telegram account while sharing:
+
+- **Redis Pub/Sub** — Cross-instance messaging
+- **Task Delegation** — `delegate_task()` to route requests to the right instance
+- **Entity Resolution** — Unified user identity across instances
+
+Configure instance identity in `config.yaml`:
+
+```yaml
+instance:
+  name: devops-bot
+  capabilities: [devops, shell, monitoring]
+  redis_channel: metaclaw:devops
+```
+
+## MetaClaw Mission Control 🚀 (Coming Soon)
+
+Ops dashboard for monitoring multiple MetaClaw instances.
+
+### Features
+- 📊 Real-time instance status & health
+- 💰 Token usage & cost dashboard
+- 📋 Task board across instances
+- 🔴 Live activity feed
+- 🧠 Memory & knowledge browser
+- 🔀 Cross-instance task delegation UI
+
+### Stack
+- **uWebSockets.js** — High-performance WebSocket server
+- **Redis** — Pub/sub & state management
+- **Vanilla JS** — Lightweight frontend
+
+### Repo
+📂 [github.com/metasanjaya/metaclaw-mission-control](https://github.com/metasanjaya/metaclaw-mission-control)
 
 ## License
 MIT

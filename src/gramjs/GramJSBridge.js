@@ -614,7 +614,20 @@ export class GramJSBridge {
     const timeOfDay = h < 6 ? 'dini hari' : h < 11 ? 'pagi' : h < 15 ? 'siang' : h < 18 ? 'sore' : 'malam';
     const timeStr = `${days[wib.getUTCDay()]}, ${wib.getUTCDate()} ${months[wib.getUTCMonth()]} ${wib.getUTCFullYear()} ${String(wib.getUTCHours()).padStart(2,'0')}:${String(wib.getUTCMinutes()).padStart(2,'0')} WIB (${timeOfDay})`;
 
-    let prompt = this.corePrompt + `\n\n## Waktu Sekarang\n${timeStr}\n`;
+    // Runtime context (paths, instance info — injected, not hardcoded in WORKFLOW.md)
+    const basePath = path.resolve(__dirname, '../..');
+    const runtimeCtx = `\n\n## Runtime Context
+- **Home:** ${basePath}
+- **Workspace:** ${basePath}/workspace
+- **Skills:** ${basePath}/skills
+- **Data:** ${basePath}/data
+- **Personality:** ${basePath}/personality
+- **Config:** ${basePath}/config.yaml (config.local.yaml overrides)
+- **Instance:** ${this.config.instance?.id || 'default'}
+- **Time:** ${timeStr}
+`;
+
+    let prompt = this.corePrompt + runtimeCtx;
 
     // Knowledge Base: inject relevant facts
     if (this.knowledge) {
