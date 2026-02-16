@@ -1131,6 +1131,78 @@ Selamat menggunakan! ✨`;
     return this._ackReactions[Math.floor(Math.random() * this._ackReactions.length)];
   }
 
+  /**
+   * Get reply context from a replied-to message
+   * Returns { context: string, isComplex: boolean } or null if no reply
+   */
+  async _getReplyContext(msg, peerId, chatId) {
+    // Check if message has replyTo
+    const replyTo = msg.message?.replyTo;
+    if (!replyTo) return null;
+
+    try {
+      // Get the chat/entity for fetching messages
+      const chat = await this.gram.client.getEntity(peerId);
+
+      // Fetch the replied-to message using the ID
+      const msgs = await this.gram.client.getMessages(chat, { ids: [replyTo.replyToMsgId] });
+      if (!msgs || !msgs[0]) {
+        console.log(`  ↩️ Reply to message not found (possibly deleted)`);
+        return null;
+      }
+
+      const repliedMsg = msgs[0];
+      const senderId = repliedMsg.senderId?.toString() || '';
+
+      // Get sender name
+      let senderName = 'Unknown';
+      try {
+        const sender = await this.gram.client.getEntity(repliedMsg.senderId);
+        senderName = sender.firstName || sender.title || 'Unknown';
+      } catch { /* ignore */ }
+
+      // Check if sender is the bot itself (check against whitelist)
+      const whitelist = this.config.gramjs?.whitelist || [];
+      const senderNumId = parseInt(senderId);
+      const isBotMessage = !isNaN(senderNumId) && whitelist.includes(senderNumId);
+
+      // Check for media messages
+      let replyText = '';
+      const hasMedia = repliedMsg.media || repliedMsg.photo || repliedMsg.document || repliedMsg.voice || repliedMsg.video || repliedMsg.sticker;
+      if (hasMedia) {
+        const mediaType = repliedMsg.voice ? 'voice' : repliedMsg.photo ? 'photo' : repliedMsg.video ? 'video' : repliedMsg.sticker ? 'sticker' : 'document';
+        replyText = `[Replying to a ${mediaType}]`;
+      } else {
+        // Get text content
+        replyText = repliedMsg.message || repliedMsg.text || '';
+        if (!replyText.trim()) {
+          return null; // Empty message
+        }
+        // Truncate to 500 chars
+        if (replyText.length > 500) {
+          replyText = replyText.substring(0, 497) + '...';
+        }
+      }
+
+      // Format the context prefix
+      let contextPrefix;
+      if (isBotMessage) {
+        contextPrefix = `[Replying to assistant's message: "${replyText}"]`;
+      } else {
+        contextPrefix = `[Replying to ${senderName}: "${replyText}"]`;
+      }
+
+      // Detect complexity: check for code blocks or tool output patterns
+      const isComplex = /```|```javascript|```python|```bash|```shell|\[TOOL:|tool call|execute|command|code|error|failed|exception/i.test(replyText);
+
+      console.log(`  ↩️ Reply context: ${contextPrefix.substring(0, 80)}... (complex: ${isComplex})`);
+      return { context: contextPrefix, isComplex };
+    } catch (err) {
+      console.warn(`  ⚠️ Failed to get reply context: ${err.message}`);
+      return null;
+    }
+  }
+
   async _detectIntent(text, senderName) {
     // Quick intent check: is this message directed at MetaClaw / needs AI response?
     // Use cheap model with minimal tokens
@@ -1698,93 +1770,6 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
     }
   }
 
-    }
-
-    // Ensure first non-system message is 'user' role
-    const firstNonSystemIdx = history.findIndex(m => m.role !== 'system');
-    if (firstNonSystemIdx !== -1 && history[firstNonSystemIdx].role === 'assistant') {
-      // Skip assistant messages at the start until we find a user message
-      let skipUntil = firstNonSystemIdx;
-      while (skipUntil < history.length && history[skipUntil].role !== 'user') {
-        skipUntil++;
-      }
-      if (skipUntil < history.length) {
-        history = [...history.slice(0, firstNonSystemIdx), ...history.slice(skipUntil)];
-      } else {
-        // No user messages at all — prepend synthetic one
-        history = [{ role: 'user', content: '(continued conversation)' }, ...history];
-      }
-    }
-
-    const messages = [
-      { role: 'system', content: systemPrompt },
-      ...history,
-    ];
-    if (extraUserMsg) {
-      messages.push({ role: 'user', content: extraUserMsg });
-    }
-
-    // Smart model routing based on complexity
-    const complexity = this._classifyComplexity(currentQuery || extraUserMsg, chatId);
-    let providerName, modelName;
-    const modelCfg = complexity === 'simple'
-      ? this.config.models?.simple || { provider: 'google', model: 'gemini-2.5-flash' }
-      : this.config.models?.complex || { provider: 'google', model: 'gemini-2.5-pro' };
-    providerName = modelCfg.provider;
-    modelName = modelCfg.model;
-
-    // Max tokens per model (uses _getMaxTokens helper)
-    const maxTokens = this._getMaxTokens(modelName, complexity, modelCfg);
-    console.log(`  🧠 Routing: ${complexity} → ${providerName}/${modelName} (maxTokens: ${maxTokens})`);
-
-    // Try primary with retry, then fallback
-    const callProvider = async (pName, mName) => {
-      const provider = this.ai._getProvider(pName);
-      const result = await provider.chat(messages, {
-        model: mName,
-        maxTokens,
-        temperature: 0.7,
-      });
-      return result;
-    };
-
-    try {
-      const result = await callProvider(providerName, modelName);
-      // Track cost
-      if (!this.costTracker[modelName]) this.costTracker[modelName] = { input: 0, output: 0, total: 0 };
-      this.costTracker[modelName].total += result.tokensUsed || 0;
-      return result;
-    } catch (primaryErr) {
-      console.warn(`  ⚠️ Primary ${providerName}/${modelName} failed: ${primaryErr.message}, retrying in 2s...`);
-
-      // Retry once after 2s
-      await new Promise(r => setTimeout(r, 2000));
-      try {
-        const result = await callProvider(providerName, modelName);
-        if (!this.costTracker[modelName]) this.costTracker[modelName] = { input: 0, output: 0, total: 0 };
-        this.costTracker[modelName].total += result.tokensUsed || 0;
-        return result;
-      } catch (retryErr) {
-        console.warn(`  ⚠️ Retry failed: ${retryErr.message}`);
-
-        // Fallback to configured fallback model
-        const fb = this.config.models?.fallback;
-        if (fb && (fb.provider !== providerName || fb.model !== modelName)) {
-          console.log(`  ⚠️ Primary failed, falling back to ${fb.provider}/${fb.model}`);
-          try {
-            const result = await callProvider(fb.provider, fb.model);
-            if (!this.costTracker[fb.model]) this.costTracker[fb.model] = { input: 0, output: 0, total: 0 };
-            this.costTracker[fb.model].total += result.tokensUsed || 0;
-            return result;
-          } catch (fbErr) {
-            throw new Error(`All models failed. Primary: ${primaryErr.message}, Fallback: ${fbErr.message}`);
-          }
-        }
-        throw retryErr;
-      }
-    }
-  }
-
   /**
    * Process a task in isolated context — no conversation history, just system prompt + task.
    * Used by AsyncTaskManager for token-efficient background tasks.
@@ -1804,7 +1789,7 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
     ];
 
     // Smart complexity detection — same as main flow
-    const complexity = this._classifyComplexity(taskPrompt);
+    const complexity = await this._classifyComplexity(taskPrompt);
     const modelCfg = complexity === 'simple'
       ? this.config.models?.simple || { provider: 'google', model: 'gemini-2.5-flash' }
       : this.config.models?.complex || { provider: 'google', model: 'gemini-2.5-pro' };
@@ -2111,6 +2096,33 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
             userContent = `[User edited message to:]\n${userContent}`;
           }
 
+          // Reply context: detect and inject replied-to message context
+          let replyContext = null;
+          let replyHint = '';
+          try {
+            replyContext = await this._getReplyContext(msg, peerId, chatId);
+            if (replyContext) {
+              // Check if this message is already in conversation history (avoid double-processing)
+              if (this.conversationMgr) {
+                const history = this.conversationMgr.getRawHistory(chatId);
+                const lastMsgs = history.slice(-5);
+                const alreadyHasReply = lastMsgs.some(m => 
+                  m.content && m.content.includes(replyContext.context.substring(0, 30))
+                );
+                if (alreadyHasReply) {
+                  console.log(`  ↩️ Reply context already in history, skipping injection`);
+                  replyContext = null;
+                }
+              }
+              if (replyContext) {
+                userContent = `${replyContext.context}\n${userContent}`;
+                replyHint = replyContext.isComplex ? ' [Reply contains code/tool output]' : '';
+              }
+            }
+          } catch (err) {
+            console.warn(`  ⚠️ Reply detection error: ${err.message}`);
+          }
+
           // Track files per chat
           if (msg.filePath && msg.fileName) {
             this.lastFilePerChat.set(chatId, { path: msg.filePath, name: msg.fileName, at: Date.now() });
@@ -2168,8 +2180,10 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
           // Process with timeout protection (90 seconds max)
           const maxRounds = this.config.tools?.max_rounds || 20;
           const processStartTime = Date.now();
+          // Include reply hint in query for complexity classification
+          const queryWithReplyHint = replyHint ? `${text || 'image analysis'}${replyHint}` : text || 'image analysis';
           const processPromise = this._processWithTools(
-            chatId, systemPrompt, imagePath, maxRounds, text || 'image analysis'
+            chatId, systemPrompt, imagePath, maxRounds, queryWithReplyHint
           );
           const timeoutPromise = new Promise((_, reject) =>
             setTimeout(() => reject(new Error('Processing timeout (180s)')), 180000)
@@ -2185,7 +2199,7 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
           if (this.missionControl) {
             const durationMs = Date.now() - processStartTime;
             // Calculate model used based on complexity (same logic as below)
-            const isSimple = this._classifyComplexity(text || 'image analysis', chatId) === 'simple';
+            const isSimple = (await this._classifyComplexity(queryWithReplyHint, chatId)) === 'simple';
             const model = isSimple 
               ? (this.config.models?.simple?.model || 'gemini-2.5-flash')
               : (this.config.models?.complex?.model || 'gemini-2.5-pro');
@@ -2488,7 +2502,7 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
             }
           }
 
-          const usedCfg = this._classifyComplexity(text) === 'simple'
+          const usedCfg = (await this._classifyComplexity(text)) === 'simple'
             ? (this.config.models?.simple || { model: 'gemini-2.5-flash' })
             : (this.config.models?.complex || { model: 'gemini-2.5-pro' });
           this.stats.record(msg.senderId || msg.message.senderId, msg.senderName, tokensUsed || 0, usedCfg.model, inTok || 0, outTok || 0);
