@@ -53,13 +53,51 @@ function isSensitive(text) {
   return SENSITIVE_PATTERNS.some(p => p.test(text));
 }
 
-function loadCorePersonality() {
+function loadPersonalityOnly() {
   const pDir = path.join(__dirname, '../../personality');
   let prompt = '';
-  // Load SOUL.md only — single source of truth for personality
+  // Load SOUL.md — personality & user info only
   const soulPath = path.join(pDir, 'SOUL.md');
   if (fs.existsSync(soulPath)) {
     prompt = fs.readFileSync(soulPath, 'utf-8').trim() + '\n\n';
+  }
+  if (!prompt) {
+    prompt = 'You are a helpful AI assistant. Be concise and friendly.';
+  }
+  prompt += '\nRespond in the same language as the user. Keep responses short unless asked for detail.';
+  return prompt;
+}
+
+function loadWorkflowOnly() {
+  const pDir = path.join(__dirname, '../../personality');
+  let prompt = 'You are a task executor. Complete the task efficiently.\n\n';
+  // Load WORKFLOW.md — rules, tools, conventions for doing work
+  const workflowPath = path.join(pDir, 'WORKFLOW.md');
+  if (fs.existsSync(workflowPath)) {
+    prompt += fs.readFileSync(workflowPath, 'utf-8').trim() + '\n\n';
+  }
+  // Tool instructions (native function calling)
+  prompt += `## Tools
+You have tools available via native function calling. Use them directly — NEVER describe what you would do, just DO IT.
+- When a task requires reading files, running commands, or making changes: USE THE TOOLS IMMEDIATELY.
+- Do NOT say "I will now run..." or "Let me check..." — just call the tool.
+- Do NOT stop mid-task to explain next steps. Complete the work, then summarize what you did.
+- If a task has multiple steps, execute them ALL in sequence using tools. Do not pause for confirmation unless explicitly asked.
+- For simple chat, just respond normally without tools.`;
+  return prompt;
+}
+
+function loadCorePersonality() {
+  const pDir = path.join(__dirname, '../../personality');
+  let prompt = '';
+  // Load SOUL.md + WORKFLOW.md — full context for main chat
+  const soulPath = path.join(pDir, 'SOUL.md');
+  const workflowPath = path.join(pDir, 'WORKFLOW.md');
+  if (fs.existsSync(soulPath)) {
+    prompt = fs.readFileSync(soulPath, 'utf-8').trim() + '\n\n';
+  }
+  if (fs.existsSync(workflowPath)) {
+    prompt += fs.readFileSync(workflowPath, 'utf-8').trim() + '\n\n';
   }
   if (!prompt) {
     prompt = 'You are a helpful AI assistant. Be concise and friendly.';
@@ -100,8 +138,9 @@ export class GramJSBridge {
     // Initialize stats tracker
     this.stats = new StatsTracker();
 
-    // Core personality (SOUL.md + IDENTITY.md) - always in system prompt
+    // Core personality - full prompt for main chat, workflow-only for isolated tasks
     this.corePrompt = loadCorePersonality();
+    this.workflowPrompt = loadWorkflowOnly();
 
     // Workspace
     this.workspacePath = path.resolve(this.config.workspace?.path || './workspace');
@@ -205,7 +244,8 @@ export class GramJSBridge {
         }, 6000);
         try {
           const maxRounds = this.config?.tools?.max_rounds || 20;
-          const { responseText: rawText, tokensUsed, inputTokens: inTok, outputTokens: outTok } = await this._processIsolated(systemPrompt, prompt, maxRounds);
+          // Isolated tasks use workflow-only prompt (no personality)
+          const { responseText: rawText, tokensUsed, inputTokens: inTok, outputTokens: outTok } = await this._processIsolated(this.workflowPrompt, prompt, maxRounds);
           let responseText = (rawText || '').replace(/\[TOOL:\s*\w+[^\]]*\][\s\S]*?\[\/TOOL\]/gi, '').replace(/\[TOOL:\s*\w+\]\s*/gi, '').replace(/\[\/TOOL\]\s*/gi, '').trim();
           // Same output sanitization as main flow
           responseText = responseText.replace(/-----BEGIN [A-Z ]+-----[\s\S]*?-----END [A-Z ]+-----/g, '[content saved to file]');
@@ -359,9 +399,9 @@ export class GramJSBridge {
     this.heartbeat = new HeartbeatManager({
       heartbeatPath: path.resolve(this.workspacePath, 'HEARTBEAT.md'),
       agentFn: async (peerId, chatId, prompt) => {
-        const systemPrompt = await this._buildSystemPrompt(prompt, chatId);
         const maxRounds = this.config?.tools?.max_rounds || 20;
-        const { responseText } = await this._processIsolated(systemPrompt, prompt, maxRounds);
+        // Isolated tasks use workflow-only prompt (no personality)
+        const { responseText } = await this._processIsolated(this.workflowPrompt, prompt, maxRounds);
         if (responseText) await this._sendSplitMessage(peerId, responseText);
       },
       sendFn: async (peerId, message) => {
@@ -409,7 +449,8 @@ export class GramJSBridge {
 
                 const taskPrompt = `You received a task delegated from instance "${fromInstance}".\n\nTask: ${payload.task}${payload.context ? `\nContext: ${payload.context}` : ''}\n\nExecute this task using your available tools. Be concise in your response — return only the result/summary.`;
                 
-                const systemPrompt = this.corePrompt + '\n\n[DELEGATED TASK MODE] You are executing a task delegated from another instance. Focus on completing the task and returning a clear result.';
+                // Isolated tasks use workflow-only prompt (no personality)
+                const systemPrompt = this.workflowPrompt + '\n\n[DELEGATED TASK MODE] You are executing a task delegated from another instance. Focus on completing the task and returning a clear result.';
                 const maxRounds = this.config?.tools?.max_rounds || 20;
                 const { responseText } = await this._processIsolated(systemPrompt, taskPrompt, maxRounds, {
                   excludeTools: ['delegate_task', 'send_to_instance', 'broadcast_instances', 'request_instance'],
