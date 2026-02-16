@@ -1428,6 +1428,67 @@ Message: "${text.substring(0, 200)}"`;
           goal: { type: "string", description: "Clear description of the task to accomplish" },
           type: { type: "string", description: "Task type: 'code' (coding/file changes), 'research' (web search/analysis), 'general' (other). Default: 'general'" }
         }
+      },
+      {
+        name: "knowledge",
+        description: "Manage the knowledge base — save, update, or delete facts. Facts are auto-injected into context when relevant.",
+        params: {
+          action: { type: "string", description: "'add' (save/update a fact), 'delete' (remove a fact), 'list' (show all facts)" },
+          fact: { type: "string", description: "The fact to save (required for add)" },
+          tags: { type: "array", description: "Tags for categorization, e.g. ['server', 'proxy'] (required for add)" },
+          id: { type: "string", description: "Fact ID (optional for add/update, required for delete)" }
+        }
+      },
+      {
+        name: "remember",
+        description: "Save something to long-term memory. Use for important info, events, preferences, decisions worth remembering.",
+        params: {
+          text: { type: "string", description: "What to remember" }
+        }
+      },
+      {
+        name: "async_shell",
+        description: "Run a long-running shell command in the background (non-blocking). Use for: apt install, npm install, docker build, git clone, deployments, anything >10 seconds. Returns immediately, notifies when done.",
+        params: {
+          command: { type: "string", description: "Shell command to run" },
+          analysis_prompt: { type: "string", description: "Optional: AI prompt to analyze the output when done" },
+          timeout: { type: "number", description: "Timeout in seconds (default: 120)" }
+        }
+      },
+      {
+        name: "send_file",
+        description: "Send a file to the current chat",
+        params: {
+          path: { type: "string", description: "File path to send" },
+          caption: { type: "string", description: "Optional caption" }
+        }
+      },
+      {
+        name: "send_voice",
+        description: "Send a voice message (text-to-speech) to the current chat",
+        params: {
+          text: { type: "string", description: "Text to convert to speech and send" }
+        }
+      },
+      {
+        name: "send_sticker",
+        description: "Send a sticker/emoji reaction to the current chat",
+        params: {
+          emoji: { type: "string", description: "Emoji to send as sticker, e.g. '😂', '👍', '🔥'" }
+        }
+      },
+      {
+        name: "task_plan",
+        description: "Create or update a multi-step task plan. Plans track progress across tool calls.",
+        params: {
+          action: { type: "string", description: "'create' (new plan), 'update' (update a step), 'complete' (mark plan done), 'list' (show active)" },
+          goal: { type: "string", description: "Plan goal (required for create)" },
+          steps: { type: "array", description: "Array of step descriptions (required for create)" },
+          plan_id: { type: "string", description: "Plan ID (required for update/complete)" },
+          step_id: { type: "number", description: "Step number (required for update)" },
+          status: { type: "string", description: "Step status: 'done', 'failed', 'skipped' (for update)" },
+          result: { type: "string", description: "Step result summary (for update)" }
+        }
       }
     ];
 
@@ -1738,6 +1799,120 @@ Message: "${text.substring(0, 200)}"`;
             plannerModel: this.config.models?.complex?.model || 'claude-opus-4-6',
           });
           return `✅ SubAgent spawned [${taskId}]\nGoal: "${goal}"\nType: ${toolInput.type || 'general'}\nStatus: running in background. Will report back when done.`;
+        }
+
+        case 'knowledge': {
+          if (!this.knowledge) return '❌ KnowledgeManager not initialized';
+          const action = toolInput.action || 'list';
+          if (action === 'add') {
+            if (!toolInput.fact) return 'Error: "fact" is required';
+            const spec = { fact: toolInput.fact, tags: toolInput.tags || [] };
+            if (toolInput.id) spec.id = toolInput.id;
+            this.knowledge.add(spec);
+            return `✅ Knowledge saved: "${toolInput.fact.substring(0, 80)}"`;
+          }
+          if (action === 'delete') {
+            if (!toolInput.id) return 'Error: "id" is required for delete';
+            if (this.knowledge.delete(toolInput.id)) return `✅ Knowledge deleted: ${toolInput.id}`;
+            return `❌ Knowledge not found: ${toolInput.id}`;
+          }
+          // list
+          const facts = this.knowledge.listAll ? this.knowledge.listAll() : [];
+          if (facts.length === 0) return 'Knowledge base is empty.';
+          return facts.map(f => `• [${f.id}] (${(f.tags || []).join(', ')}): ${f.fact}`).join('\n');
+        }
+
+        case 'remember': {
+          if (!toolInput.text) return 'Error: "text" is required';
+          if (this.memory) {
+            this.memory.addMemory(toolInput.text.trim());
+            if (this.rag) this.rag.reindex().catch(() => {});
+            return `✅ Remembered: "${toolInput.text.trim().substring(0, 80)}"`;
+          }
+          return '❌ MemoryManager not initialized';
+        }
+
+        case 'async_shell': {
+          if (!toolInput.command) return 'Error: "command" is required';
+          if (this.asyncTasks) {
+            const taskId = await this.asyncTasks.run({
+              command: toolInput.command,
+              analysisPrompt: toolInput.analysis_prompt,
+              timeout: toolInput.timeout || 120,
+              peerId: String(this._currentPeerId || ''),
+              chatId: String(this._currentChatId || ''),
+            });
+            return `✅ Async task started [${taskId}]: ${toolInput.command.substring(0, 100)}\nRunning in background. Will notify when done.`;
+          }
+          // Fallback: run directly
+          const { execSync } = await import('child_process');
+          const output = execSync(toolInput.command, { timeout: (toolInput.timeout || 120) * 1000, encoding: 'utf-8', maxBuffer: 1024 * 1024 });
+          return output.substring(0, 5000);
+        }
+
+        case 'send_file': {
+          if (!toolInput.path) return 'Error: "path" is required';
+          const peerId = this._currentPeerId;
+          if (!peerId) return 'Error: no active chat';
+          await this.gram.sendFile(peerId, toolInput.path, toolInput.caption || '', this._currentMessageId);
+          return `✅ File sent: ${toolInput.path}`;
+        }
+
+        case 'send_voice': {
+          if (!toolInput.text) return 'Error: "text" is required';
+          // TTS via shell (gtts or espeak fallback)
+          const tmpPath = `/tmp/voice_${Date.now()}.ogg`;
+          try {
+            const { execSync } = await import('child_process');
+            // Try gtts first, then espeak
+            try {
+              execSync(`echo "${toolInput.text.replace(/"/g, '\\"')}" | gtts-cli -l id - | ffmpeg -i - -c:a libopus ${tmpPath} -y 2>/dev/null`, { timeout: 30000 });
+            } catch {
+              execSync(`espeak -v id "${toolInput.text.replace(/"/g, '\\"')}" --stdout | ffmpeg -i - -c:a libopus ${tmpPath} -y 2>/dev/null`, { timeout: 30000 });
+            }
+            await this.gram.sendVoice(this._currentPeerId, tmpPath, this._currentMessageId);
+            return `✅ Voice sent: "${toolInput.text.substring(0, 50)}"`;
+          } catch (e) {
+            return `❌ Voice failed: ${e.message}. TTS tools (gtts-cli/espeak + ffmpeg) may not be installed.`;
+          }
+        }
+
+        case 'send_sticker': {
+          if (!toolInput.emoji) return 'Error: "emoji" is required';
+          const peerId = this._currentPeerId;
+          if (!peerId) return 'Error: no active chat';
+          try {
+            await this.gram.sendMessage(peerId, toolInput.emoji);
+            return `✅ Sticker/emoji sent: ${toolInput.emoji}`;
+          } catch (e) {
+            return `❌ Failed to send sticker: ${e.message}`;
+          }
+        }
+
+        case 'task_plan': {
+          if (!this.planner) return '❌ TaskPlanner not initialized';
+          const action = toolInput.action || 'list';
+          if (action === 'create') {
+            if (!toolInput.goal || !toolInput.steps?.length) return 'Error: "goal" and "steps" are required';
+            const planId = this.planner.create(this._currentChatId, toolInput.goal, toolInput.steps);
+            return `✅ Plan created [${planId}]: "${toolInput.goal}" (${toolInput.steps.length} steps)`;
+          }
+          if (action === 'update') {
+            if (!toolInput.plan_id || !toolInput.step_id) return 'Error: "plan_id" and "step_id" required';
+            this.planner.updateStep(toolInput.plan_id, toolInput.step_id, toolInput.status || 'done', toolInput.result || '');
+            return `✅ Step ${toolInput.step_id} updated: ${toolInput.status || 'done'}`;
+          }
+          if (action === 'complete') {
+            if (!toolInput.plan_id) return 'Error: "plan_id" required';
+            const plan = this.planner.plans.get(toolInput.plan_id);
+            if (plan) { plan.status = 'completed'; this.planner._save(plan); }
+            return `✅ Plan ${toolInput.plan_id} completed`;
+          }
+          // list
+          const active = this.planner.getActive(this._currentChatId);
+          if (!active) return 'No active plan for this chat.';
+          const stepsStr = active.steps.map(s => `  ${s.id}. [${s.status}] ${s.desc}${s.result ? ` → ${s.result}` : ''}`).join('\n');
+          return `📋 Plan [${active.id}]: ${active.goal}\n${stepsStr}`;
         }
 
         default:
