@@ -728,6 +728,31 @@ export class GramJSBridge {
       } catch {}
     }
 
+    // Inject active tasks awareness
+    const activeTasksParts = [];
+    if (this.asyncTasks) {
+      const running = this.asyncTasks.listPending();
+      if (running.length > 0) {
+        activeTasksParts.push('⚡ RUNNING ASYNC TASKS:');
+        for (const t of running) {
+          const elapsed = ((Date.now() - t.startedAt) / 1000).toFixed(0);
+          activeTasksParts.push(`  [${t.id}] ${t.cmd.substring(0, 80)} (${elapsed}s)`);
+        }
+      }
+    }
+    if (this.subAgent) {
+      const agents = this.subAgent.listAll().filter(a => !['completed', 'failed', 'aborted'].includes(a.status));
+      if (agents.length > 0) {
+        activeTasksParts.push('🤖 ACTIVE SUB-AGENTS:');
+        for (const a of agents) {
+          activeTasksParts.push(`  [${a.id}] ${a.goal.substring(0, 80)} (${a.status}, turn ${a.turns})`);
+        }
+      }
+    }
+    if (activeTasksParts.length > 0) {
+      prompt += `\n\n## ⚠️ Active Tasks (DO NOT create duplicates!)\n${activeTasksParts.join('\n')}\nBefore spawning new tasks/schedules, check if a similar one already exists above.`;
+    }
+
     // 📊 Context size logging
     const promptBytes = Buffer.byteLength(prompt, 'utf-8');
     const coreBytes = Buffer.byteLength(this.corePrompt, 'utf-8');
@@ -1203,6 +1228,58 @@ Selamat menggunakan! ✨`;
       return true;
     }
 
+    if (text === '/stoptasks') {
+      let msg = '';
+      if (this.asyncTasks) {
+        const n = this.asyncTasks.stopAll();
+        msg += `⚡ Stopped ${n} async tasks\n`;
+      }
+      if (!msg) msg = 'No task managers available.';
+      await this.gram.sendMessage(peerId, msg.trim(), messageId);
+      return true;
+    }
+
+    if (text === '/stopagents') {
+      let msg = '';
+      if (this.subAgent) {
+        const n = this.subAgent.abortAll();
+        msg += `🤖 Aborted ${n} sub-agents\n`;
+      }
+      if (!msg) msg = 'No sub-agent manager available.';
+      await this.gram.sendMessage(peerId, msg.trim(), messageId);
+      return true;
+    }
+
+    if (text === '/stopall') {
+      let msg = '';
+      if (this.asyncTasks) {
+        const n = this.asyncTasks.stopAll();
+        msg += `⚡ Stopped ${n} async tasks\n`;
+      }
+      if (this.subAgent) {
+        const n = this.subAgent.abortAll();
+        msg += `🤖 Aborted ${n} sub-agents\n`;
+      }
+      if (!msg) msg = 'Nothing to stop.';
+      await this.gram.sendMessage(peerId, msg.trim(), messageId);
+      return true;
+    }
+
+    if (text === '/clearall') {
+      let msg = '';
+      if (this.asyncTasks) {
+        const n = this.asyncTasks.clearAll();
+        msg += `⚡ Cleared ${n} async tasks\n`;
+      }
+      if (this.subAgent) {
+        const n = this.subAgent.clearAll();
+        msg += `🤖 Cleared ${n} sub-agents\n`;
+      }
+      if (!msg) msg = 'Nothing to clear.';
+      await this.gram.sendMessage(peerId, msg.trim(), messageId);
+      return true;
+    }
+
     return false;
   }
 
@@ -1412,7 +1489,7 @@ Message: "${text.substring(0, 200)}"`;
       },
       {
         name: "schedule",
-        description: "Create, list, or remove scheduled reminders/tasks. Use this to set reminders, recurring checks, or scheduled messages.",
+        description: "Create, list, or remove scheduled reminders/tasks. IMPORTANT: Before adding, call active_tasks to check for duplicates. Never re-schedule a task that already exists or is already running as an async task/sub-agent.",
         params: {
           action: { type: "string", description: "Action: 'add', 'list', or 'remove'" },
           message: { type: "string", description: "Reminder text or task description (required for add)" },
@@ -1424,7 +1501,7 @@ Message: "${text.substring(0, 200)}"`;
       },
       {
         name: "spawn_subagent",
-        description: "Spawn a background AI sub-agent for complex, multi-step, or long-running tasks. The sub-agent works autonomously and reports back when done. Use for: code changes, research, file operations, deployments, anything that takes multiple steps.",
+        description: "Spawn a background AI sub-agent for complex, multi-step, or long-running tasks. IMPORTANT: Call active_tasks first — if a similar task is already running, report status instead of spawning duplicate. The sub-agent works autonomously and reports back when done.",
         params: {
           goal: { type: "string", description: "Clear description of the task to accomplish" },
           type: { type: "string", description: "Task type: 'code' (coding/file changes), 'research' (web search/analysis), 'general' (other). Default: 'general'" }
@@ -1436,7 +1513,7 @@ Message: "${text.substring(0, 200)}"`;
         params: {
           action: { type: "string", description: "'add' (save/update a fact), 'delete' (remove a fact), 'list' (show all facts)" },
           fact: { type: "string", description: "The fact to save (required for add)" },
-          tags: { type: "array", description: "Tags for categorization, e.g. ['server', 'proxy'] (required for add)" },
+          tags: { type: "array", items: { type: "string" }, description: "Tags for categorization, e.g. ['server', 'proxy'] (required for add)" },
           id: { type: "string", description: "Fact ID (optional for add/update, required for delete)" }
         }
       },
@@ -1448,8 +1525,13 @@ Message: "${text.substring(0, 200)}"`;
         }
       },
       {
+        name: "active_tasks",
+        description: "Check all currently running tasks, sub-agents, and scheduled jobs. ALWAYS call this BEFORE spawning new tasks or schedules to avoid duplicates. Returns running async tasks, active sub-agents, and pending schedules.",
+        params: {}
+      },
+      {
         name: "async_shell",
-        description: "Run a long-running shell command in the background (non-blocking). Use for: apt install, npm install, docker build, git clone, deployments, anything >10 seconds. Returns immediately, notifies when done.",
+        description: "Run a long-running shell command in the background (non-blocking). IMPORTANT: Call active_tasks first to check if the same command is already running. Use for: apt install, npm install, docker build, git clone, deployments, anything >10 seconds. Returns immediately, notifies when done.",
         params: {
           command: { type: "string", description: "Shell command to run" },
           analysis_prompt: { type: "string", description: "Optional: AI prompt to analyze the output when done" },
@@ -1484,7 +1566,7 @@ Message: "${text.substring(0, 200)}"`;
         params: {
           action: { type: "string", description: "'create' (new plan), 'update' (update a step), 'complete' (mark plan done), 'list' (show active)" },
           goal: { type: "string", description: "Plan goal (required for create)" },
-          steps: { type: "array", description: "Array of step descriptions (required for create)" },
+          steps: { type: "array", items: { type: "string" }, description: "Array of step descriptions (required for create)" },
           plan_id: { type: "string", description: "Plan ID (required for update/complete)" },
           step_id: { type: "number", description: "Step number (required for update)" },
           status: { type: "string", description: "Step status: 'done', 'failed', 'skipped' (for update)" },
@@ -1681,7 +1763,7 @@ Message: "${text.substring(0, 200)}"`;
     }
   }
 
-  async _executeSingleTool(toolName, toolInput, imagePath) {
+  async _executeSingleTool(toolName, toolInput, imagePath, { noAsync = false } = {}) {
     // Track tool calls for post-response validation
     if (!this._lastToolCalls) this._lastToolCalls = [];
     this._lastToolCalls.push(toolName);
@@ -1696,8 +1778,9 @@ Message: "${text.substring(0, 200)}"`;
       switch (toolName) {
         case 'shell':
           const cmd = toolInput.command;
-          // Auto-detect long-running commands → run async
-          if (this._isLongRunningCmd(cmd) && this.asyncTasks) {
+          // Auto-async DISABLED — was causing infinite spawn loops
+          // Use explicit async_shell tool instead for background tasks
+          if (false && !noAsync && this._isLongRunningCmd(cmd) && this.asyncTasks) {
             const taskId = this.asyncTasks.add({
               peerId: this._currentPeerId,
               chatId: this._currentChatId,
@@ -1761,6 +1844,16 @@ Message: "${text.substring(0, 200)}"`;
             const chatId = this._currentChatId || '';
             const jobType = toolInput.type || 'direct';
             const repeatMs = toolInput.repeat_hours ? toolInput.repeat_hours * 3600000 : null;
+            // Dedup: check if similar schedule already exists (same message + within 5 min window)
+            const existingJobs = this.scheduler.listAll();
+            const dupJob = existingJobs.find(j => 
+              j.message === toolInput.message && 
+              Math.abs(j.triggerAt - triggerAt) < 300_000 // within 5 min
+            );
+            if (dupJob) {
+              return `⚡ Schedule already exists (ID: ${dupJob.id.slice(0, 8)}) with same message and similar time. Skipped duplicate.`;
+            }
+
             const jobId = this.scheduler.add({
               peerId,
               chatId,
@@ -1768,6 +1861,8 @@ Message: "${text.substring(0, 200)}"`;
               triggerAt,
               repeatMs,
               type: jobType,
+              sourceAgent: this._currentSourceAgent || null,
+              sourceTask: this._currentSourceTask || null,
             });
             const timeStr = new Date(triggerAt).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
             return `✅ Schedule created (ID: ${jobId.slice(0, 8)})\nMessage: "${toolInput.message}"\nTime: ${timeStr} WIB\nType: ${jobType}${repeatMs ? `\nRepeat: every ${toolInput.repeat_hours}h` : ''}`;
@@ -1797,6 +1892,30 @@ Message: "${text.substring(0, 200)}"`;
           if (!this.subAgent) return '❌ SubAgent system not initialized';
           const goal = toolInput.goal;
           if (!goal) return 'Error: "goal" is required';
+
+          // Check for duplicate: active sub-agent with similar goal
+          const activeAgents = this.subAgent.listAll().filter(a => !['completed', 'failed', 'aborted'].includes(a.status));
+          const similarAgent = activeAgents.find(a => {
+            // Fuzzy match: check if goals share >50% words
+            const goalWords = new Set(goal.toLowerCase().split(/\s+/));
+            const existingWords = new Set(a.goal.toLowerCase().split(/\s+/));
+            const overlap = [...goalWords].filter(w => existingWords.has(w)).length;
+            return overlap / Math.max(goalWords.size, existingWords.size) > 0.5;
+          });
+          if (similarAgent) {
+            return `⚠️ Similar sub-agent already running!\n  [${similarAgent.id}] "${similarAgent.goal}" (status: ${similarAgent.status}, turns: ${similarAgent.turns})\n\nUse active_tasks to check status. Do NOT spawn duplicate.`;
+          }
+
+          // Check running async tasks for similar commands
+          if (this.asyncTasks) {
+            const runningTasks = this.asyncTasks.listPending();
+            if (runningTasks.length > 0) {
+              const taskList = runningTasks.map(t => `  [${t.id}] ${t.cmd.substring(0, 80)}`).join('\n');
+              // Don't block, just inform
+              console.log(`  🤖 SpawnSubagent: ${runningTasks.length} async tasks running while spawning`);
+            }
+          }
+
           const peerId = this._currentPeerId || '';
           const chatId = this._currentChatId || '';
           const taskId = await this.subAgent.spawn({
@@ -1840,6 +1959,54 @@ Message: "${text.substring(0, 200)}"`;
             return `✅ Remembered: "${toolInput.text.trim().substring(0, 80)}"`;
           }
           return '❌ MemoryManager not initialized';
+        }
+
+        case 'active_tasks': {
+          const parts = [];
+          
+          // Running async tasks
+          if (this.asyncTasks) {
+            const running = this.asyncTasks.listPending();
+            if (running.length > 0) {
+              parts.push('⚡ RUNNING ASYNC TASKS:');
+              for (const t of running) {
+                const elapsed = ((Date.now() - t.startedAt) / 1000).toFixed(0);
+                parts.push(`  [${t.id}] ${t.cmd.substring(0, 100)} (${elapsed}s elapsed)`);
+              }
+            } else {
+              parts.push('⚡ No running async tasks.');
+            }
+          }
+
+          // Active sub-agents
+          if (this.subAgent) {
+            const agents = this.subAgent.listAll().filter(a => !['completed', 'failed', 'aborted'].includes(a.status));
+            if (agents.length > 0) {
+              parts.push('\n🤖 ACTIVE SUB-AGENTS:');
+              for (const a of agents) {
+                parts.push(`  [${a.id}] ${a.goal} (status: ${a.status}, turns: ${a.turns})`);
+              }
+            } else {
+              parts.push('\n🤖 No active sub-agents.');
+            }
+          }
+
+          // Pending schedules (next 24h)
+          if (this.scheduler) {
+            const jobs = this.scheduler.listAll();
+            const next24h = jobs.filter(j => j.triggerAt <= Date.now() + 86400000);
+            if (next24h.length > 0) {
+              parts.push('\n📅 SCHEDULED JOBS (next 24h):');
+              for (const j of next24h) {
+                const time = new Date(j.triggerAt).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+                parts.push(`  [${j.id.slice(0, 8)}] ${j.message.substring(0, 80)} (${time} WIB, type: ${j.type})`);
+              }
+            } else {
+              parts.push('\n📅 No scheduled jobs in next 24h.');
+            }
+          }
+
+          return parts.join('\n');
         }
 
         case 'async_shell': {
@@ -2186,9 +2353,9 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
    */
   async _processIsolated(systemPrompt, taskPrompt, maxRounds = 10, opts = {}) {
     let tools = this._getToolDefinitions();
-    if (opts.excludeTools?.length) {
-      tools = tools.filter(t => !opts.excludeTools.includes(t.name));
-    }
+    // Always exclude async_shell from isolated processing to prevent spawn loops
+    const excludeList = [...(opts.excludeTools || []), 'async_shell', 'spawn_agent', 'spawn_subagent', 'schedule'];
+    tools = tools.filter(t => !excludeList.includes(t.name));
     let totalTokens = 0;
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
@@ -2233,7 +2400,7 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
       // Execute tool calls
       const toolResults = [];
       for (const tc of result.toolCalls) {
-        const output = await this._executeSingleTool(tc.name, tc.input, null);
+        const output = await this._executeSingleTool(tc.name, tc.input, null, { noAsync: true });
         toolResults.push({ id: tc.id, result: output });
       }
 

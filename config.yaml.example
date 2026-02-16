@@ -11,21 +11,42 @@ gramjs:
 
 # Smart Model Routing
 models:
+  # Simple tasks (casual chat, quick answers)
   simple:
-    provider: anthropic
-    model: claude-sonnet-4-5
+    provider: openai
+    model: gpt-5.2
+    reasoning: medium
+
+  # Complex tasks (analysis, debugging, multi-step)
   complex:
     provider: anthropic
     model: claude-opus-4-6
+
+  # Intent classification & vision
   intent:
     provider: google
     model: gemini-2.5-flash
   vision:
     provider: google
     model: gemini-2.5-flash
+
+  # Fallback when primary fails
   fallback:
     provider: google
-    model: gemini-2.5-pro
+    model: gemini-3
+
+# Sub-Agent Models
+# Planning phase (generates step-by-step plan)
+subagent:
+  planner:
+    provider: openai
+    model: gpt-5.2
+    reasoning: high
+
+  # Execution phase (executes each step with tools)
+  executor:
+    provider: minimax
+    model: MiniMax-M2.5
 
 # Access Control
 access_control:
@@ -34,7 +55,7 @@ access_control:
 
 # Tools
 tools:
-  max_rounds: 200  # max tool call rounds per message
+  max_rounds: 100  # max tool call rounds per message
 
 # Debug mode (dumps AI requests to data/debug/)
 debug: false
@@ -46,3 +67,12 @@ workspace:
 # Features
 features:
   streaming: false  # placeholder + edit response mode
+
+# Multi-instance communication (optional)
+# instance:
+#   id: my-instance
+#   name: "My Instance"
+#   scope: "General assistant"
+#   redis:
+#     url: redis://localhost:6379
+#     prefix: metaclaw

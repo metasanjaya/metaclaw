@@ -62,6 +62,33 @@ export class AsyncTaskManager {
    * @returns {string} task id
    */
   add({ peerId, chatId, cmd, msg, if: condition = null, aiAnalysis = true, replyTo = null, timeout = 120000 }) {
+    // Dedup: skip if identical command already running
+    const running = [...this.tasks.values()].filter(t => t.status === 'running');
+    const duplicate = running.find(t => t.cmd === cmd);
+    if (duplicate) {
+      console.log(`  ⚡ Skipped duplicate async task: "${this._sanitizeCmd(cmd).substring(0, 60)}" (already running as ${duplicate.id})`);
+      return duplicate.id;
+    }
+
+    // Cooldown: skip if same command completed within last 60s
+    const now = Date.now();
+    const recentDupe = [...this.tasks.values()].find(
+      t => t.cmd === cmd && t.completedAt && (now - t.completedAt) < 60_000
+    );
+    if (recentDupe) {
+      console.log(`  ⚡ Skipped async task (cooldown 60s): "${this._sanitizeCmd(cmd).substring(0, 60)}" (was ${recentDupe.id})`);
+      return recentDupe.id;
+    }
+
+    // Max concurrent limit: 3
+    if (running.length >= 3) {
+      console.log(`  ⚡ Skipped async task (max 3 concurrent): "${this._sanitizeCmd(cmd).substring(0, 60)}"`);
+      return null;
+    }
+
+    // Debug: trace who's spawning tasks
+    console.log(`  ⚡ TASK_ADD called: "${this._sanitizeCmd(cmd).substring(0, 60)}"`, new Error().stack?.split('\n')[2]?.trim());
+
     const id = randomUUID().slice(0, 8);
     const task = {
       id,
@@ -128,6 +155,45 @@ export class AsyncTaskManager {
       clearInterval(this.timer);
       this.timer = null;
     }
+  }
+
+  /**
+   * Stop all running tasks (kill processes + mark as failed)
+   * @returns {number} Number of tasks stopped
+   */
+  stopAll() {
+    let count = 0;
+    for (const task of this.tasks.values()) {
+      if (task.status === 'running') {
+        // Kill the process if possible
+        if (task.pid) {
+          try { process.kill(task.pid, 'SIGKILL'); } catch {}
+        }
+        task.status = 'failed';
+        task.error = 'Stopped by stopAll command';
+        task.completedAt = Date.now();
+        task.processed = true; // Don't trigger AI analysis
+        count++;
+      }
+    }
+    if (count > 0) {
+      this._save();
+      console.log(`  ⚡ Stopped ${count} async tasks`);
+    }
+    return count;
+  }
+
+  /**
+   * Clear all tasks (running + completed)
+   * @returns {number} Number of tasks cleared
+   */
+  clearAll() {
+    const count = this.tasks.size;
+    this.stopAll();
+    this.tasks.clear();
+    this._save();
+    console.log(`  ⚡ Cleared ${count} async tasks`);
+    return count;
   }
 
   /**
@@ -276,6 +342,11 @@ export class AsyncTaskManager {
               task.status = 'timeout';
               task.error = 'Task was running when process restarted';
               task.completedAt = Date.now();
+              task.processed = true; // Don't re-trigger AI analysis on restart
+            }
+            // Mark all non-running restored tasks as processed too
+            if (task.status !== 'running') {
+              task.processed = true;
             }
             this.tasks.set(task.id, task);
           }
