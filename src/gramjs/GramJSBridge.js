@@ -388,6 +388,7 @@ export class GramJSBridge {
       tools: this.tools,
       knowledge: this.knowledge,
       rag: this.rag,
+      config: this.config,
       sendFn: async (peerId, message, replyTo) => {
         await this.gram.sendMessage(peerId, message, replyTo);
       },

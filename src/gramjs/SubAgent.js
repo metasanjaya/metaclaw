@@ -122,13 +122,14 @@ export class SubAgent {
    * @param {Function} [opts.sendFn] - (peerId, message, replyTo) => Promise
    * @param {Object} [opts.asyncTaskManager] - AsyncTaskManager for background commands
    */
-  constructor({ ai, tools, knowledge, rag, sendFn, asyncTaskManager }) {
+  constructor({ ai, tools, knowledge, rag, sendFn, asyncTaskManager, config }) {
     this.ai = ai;
     this.tools = tools;
     this.knowledge = knowledge;
     this.rag = rag;
     this.sendFn = sendFn || (() => {});
     this.asyncTaskManager = asyncTaskManager || null;
+    this.config = config || {};
 
     /** @type {Map<string, Object>} */
     this.tasks = new Map();
@@ -202,7 +203,7 @@ export class SubAgent {
       executorModel: opts.executorModel || 'claude-sonnet-4-5',
 
       // Limits
-      maxTurns: opts.maxTurns || 10,
+      maxTurns: opts.maxTurns || this.config?.tools?.max_rounds || 200,
       timeout: opts.timeout || 600000,
       allowedTools: opts.tools || null, // null = all
 
