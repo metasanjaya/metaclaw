@@ -49,12 +49,17 @@ export class BaseProvider {
     // Validate toolCalls if present
     if (Array.isArray(raw?.toolCalls) && raw.toolCalls.length > 0) {
       validated.toolCalls = raw.toolCalls
-        .filter(tc => tc && typeof tc.name === 'string')
-        .map(tc => ({
-          id: typeof tc.id === 'string' ? tc.id : `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-          name: tc.name,
-          input: tc.input && typeof tc.input === 'object' ? tc.input : {},
-        }));
+        .filter(tc => tc && (typeof tc.name === 'string' || typeof tc.function?.name === 'string'))
+        .map(tc => {
+          // Support both native format {name, input} and OpenAI format {function: {name, arguments}}
+          const name = tc.name || tc.function?.name;
+          const input = tc.input || (tc.function?.arguments ? (typeof tc.function.arguments === 'string' ? JSON.parse(tc.function.arguments) : tc.function.arguments) : {});
+          return {
+            id: typeof tc.id === 'string' ? tc.id : `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            name,
+            input: input && typeof input === 'object' ? input : {},
+          };
+        });
       if (validated.toolCalls.length === 0) delete validated.toolCalls;
     }
 

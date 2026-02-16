@@ -342,11 +342,14 @@ export class InstanceManager extends EventEmitter {
       },
       {
         name: 'delegate_task',
-        description: 'Delegate a task to another instance that has the right scope/expertise. The target instance will process the task using its AI and tools, then return the result. Use this when a user request falls outside your scope.',
+        description: 'Delegate a task to another instance that has the right scope/expertise. The target instance will process the task using its AI and tools, then return the result. IMPORTANT: Always include replyTo with the chatId or username where the result should be sent.',
         params: {
           to: { type: 'string', description: 'Target instance ID (check list_instances to see available instances and their scopes)' },
           task: { type: 'string', description: 'Clear description of what needs to be done' },
           context: { type: 'string', description: 'Additional context (e.g. who requested, why, relevant details)' },
+          replyToId: { type: 'string', description: 'Numeric chat/user ID where to send result (e.g. "5020823483"). REQUIRED.' },
+          replyToUsername: { type: 'string', description: 'Telegram username without @ (e.g. "MetaSanjaya"). Optional but recommended as fallback.' },
+          replyToTopicId: { type: 'number', description: 'Topic/thread ID for forum-style groups. Optional.' },
           timeout_ms: { type: 'number', description: 'Timeout in milliseconds (default 60000 for tasks)' },
         },
       },
@@ -394,11 +397,11 @@ export class InstanceManager extends EventEmitter {
       }
 
       case 'delegate_task': {
-        const { to, task, context, timeout_ms } = input;
+        const { to, task, context, replyToId, replyToUsername, replyToTopicId, timeout_ms } = input;
         const peer = await this.getPeer(to);
         if (!peer) return `Instance "${to}" is not online.`;
         try {
-          const result = await this.request(to, 'execute_task', { task, context: context || '' }, timeout_ms || 60000);
+          const result = await this.request(to, 'execute_task', { task, context: context || '', replyToId: replyToId || '', replyToUsername: replyToUsername || '', replyToTopicId: replyToTopicId || null }, timeout_ms || 60000);
           if (result.error) return `Task failed: ${result.error}`;
           return typeof result === 'string' ? result : JSON.stringify(result, null, 2);
         } catch (err) {

@@ -17,7 +17,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PERSIST_PATH = path.join(__dirname, '../../data/conversations.json');
+const PERSIST_DIR = path.join(__dirname, '../../data/conversations');
+const LEGACY_PATH = path.join(__dirname, '../../data/conversations.json');
 const MAX_MESSAGES_PER_CHAT = 80;
 const SAVE_DEBOUNCE_MS = 5000;
 
@@ -39,6 +40,7 @@ export class ConversationManager {
     this.embedder = embeddingManager;
     this._embedderReady = false;
     this._saveTimer = null;
+    this._dirtyChats = new Set(); // track which chatIds need saving
     this._checkEmbedder();
     this._loadFromDisk();
   }
@@ -51,13 +53,36 @@ export class ConversationManager {
 
   _loadFromDisk() {
     try {
-      if (fs.existsSync(PERSIST_PATH)) {
-        const data = JSON.parse(fs.readFileSync(PERSIST_PATH, 'utf-8'));
-        for (const [chatId, chatData] of Object.entries(data)) {
-          const messages = (chatData.messages || []).map(m => ({ ...m, embedding: null, topic: m.topic || null }));
-          this.chats.set(chatId, { messages, summary: chatData.summary || '' });
+      // Migrate legacy single-file format
+      if (fs.existsSync(LEGACY_PATH)) {
+        const data = JSON.parse(fs.readFileSync(LEGACY_PATH, 'utf-8'));
+        if (Object.keys(data).length > 0) {
+          if (!fs.existsSync(PERSIST_DIR)) fs.mkdirSync(PERSIST_DIR, { recursive: true });
+          for (const [chatId, chatData] of Object.entries(data)) {
+            const filePath = path.join(PERSIST_DIR, `${chatId}.json`);
+            if (!fs.existsSync(filePath)) {
+              fs.writeFileSync(filePath, JSON.stringify(chatData, null, 2));
+            }
+          }
+          console.log(`💾 Migrated ${Object.keys(data).length} conversations from legacy format`);
         }
-        console.log(`💾 Loaded ${this.chats.size} conversations from disk`);
+        fs.renameSync(LEGACY_PATH, LEGACY_PATH + '.bak');
+      }
+
+      // Load per-chat files
+      if (fs.existsSync(PERSIST_DIR)) {
+        const files = fs.readdirSync(PERSIST_DIR).filter(f => f.endsWith('.json'));
+        for (const file of files) {
+          try {
+            const chatId = file.replace('.json', '');
+            const chatData = JSON.parse(fs.readFileSync(path.join(PERSIST_DIR, file), 'utf-8'));
+            const messages = (chatData.messages || []).map(m => ({ ...m, embedding: null, topic: m.topic || null }));
+            this.chats.set(chatId, { messages, summary: chatData.summary || '' });
+          } catch (e) {
+            console.warn(`⚠️ Failed to load conversation ${file}: ${e.message}`);
+          }
+        }
+        if (this.chats.size > 0) console.log(`💾 Loaded ${this.chats.size} conversations from disk`);
       }
     } catch (err) {
       console.warn(`⚠️ Failed to load conversations: ${err.message}`);
@@ -74,17 +99,25 @@ export class ConversationManager {
 
   _saveToDisk() {
     try {
-      const data = {};
-      for (const [chatId, chat] of this.chats) {
+      if (!fs.existsSync(PERSIST_DIR)) fs.mkdirSync(PERSIST_DIR, { recursive: true });
+      
+      // Only save dirty chats
+      for (const chatId of this._dirtyChats) {
+        const chat = this.chats.get(chatId);
+        if (!chat) {
+          // Chat was cleared — remove file
+          const filePath = path.join(PERSIST_DIR, `${chatId}.json`);
+          if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+          continue;
+        }
         const msgs = chat.messages
           .filter(m => m.role !== 'system')
           .slice(-MAX_MESSAGES_PER_CHAT)
           .map(m => ({ role: m.role, content: m.content, ...(m.topic ? { topic: m.topic } : {}) }));
-        data[chatId] = { messages: msgs, summary: chat.summary || '' };
+        const filePath = path.join(PERSIST_DIR, `${chatId}.json`);
+        fs.writeFileSync(filePath, JSON.stringify({ messages: msgs, summary: chat.summary || '' }, null, 2));
       }
-      const dir = path.dirname(PERSIST_PATH);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(PERSIST_PATH, JSON.stringify(data, null, 2));
+      this._dirtyChats.clear();
     } catch (err) {
       console.warn(`⚠️ Failed to save conversations: ${err.message}`);
     }
@@ -102,7 +135,15 @@ export class ConversationManager {
 
     // Compress tool output before storing (keep essential info, trim bulk)
     const compressed = this._compressToolOutput(content);
-    chat.messages.push({ role, content: compressed, embedding: null, topic: topic || null });
+
+    // Merge consecutive same-role messages into one (keeps clean user→assistant→user alternation)
+    const lastMsg = chat.messages.length > 0 ? chat.messages[chat.messages.length - 1] : null;
+    if (lastMsg && lastMsg.role === role) {
+      lastMsg.content = lastMsg.content + '\n' + compressed;
+      if (topic) lastMsg.topic = topic; // update topic to latest
+    } else {
+      chat.messages.push({ role, content: compressed, embedding: null, topic: topic || null });
+    }
 
     // Generate summary every 15 messages
     if (chat.messages.length % 15 === 0 && chat.messages.length > 10) {
@@ -114,6 +155,7 @@ export class ConversationManager {
       this._compactHistory(chatId);
     }
 
+    this._dirtyChats.add(chatId);
     this._scheduleSave();
   }
 
@@ -320,6 +362,7 @@ export class ConversationManager {
 
     chat.messages = recent;
     console.log(`📦 Compacted chat ${chatId}: ${oldest.length + recent.length} → ${recent.length} msgs (summary: ${chat.summary.length} chars)`);
+    this._dirtyChats.add(chatId);
     this._scheduleSave();
   }
 
@@ -331,9 +374,12 @@ export class ConversationManager {
 
   clear(chatId) {
     if (chatId) {
+      this._dirtyChats.add(chatId);
       this.chats.delete(chatId);
     } else {
+      for (const id of this.chats.keys()) this._dirtyChats.add(id);
       this.chats.clear();
     }
+    this._scheduleSave();
   }
 }

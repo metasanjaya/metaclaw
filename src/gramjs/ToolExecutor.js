@@ -52,9 +52,10 @@ function getMimeType(filePath) {
 }
 
 export class ToolExecutor {
-  constructor() {
+  constructor(config = {}) {
     this.apiKey = process.env.GOOGLE_API_KEY;
     this.workspace = '/root';
+    this.braveApiKey = config.search?.brave_api_key || process.env.BRAVE_API_KEY || '';
   }
 
   setWorkspace(dir) {
@@ -87,6 +88,25 @@ export class ToolExecutor {
   }
 
   async webSearch(query, { count = 5 } = {}) {
+    // Brave Search API (preferred)
+    if (this.braveApiKey) {
+      try {
+        const { data } = await axios.get('https://api.search.brave.com/res/v1/web/search', {
+          params: { q: query, count },
+          headers: { 'X-Subscription-Token': this.braveApiKey, 'Accept': 'application/json' },
+          timeout: 10000,
+        });
+        return (data.web?.results || []).slice(0, count).map(r => ({
+          title: r.title || '',
+          url: r.url || '',
+          snippet: r.description || '',
+        }));
+      } catch (err) {
+        console.warn(`⚠️ Brave search failed: ${err.message}, falling back to DuckDuckGo`);
+      }
+    }
+
+    // Fallback: DuckDuckGo HTML scraping
     try {
       const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
       const { data } = await axios.get(url, {

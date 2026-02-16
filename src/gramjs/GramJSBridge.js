@@ -26,7 +26,7 @@ import { HeartbeatManager } from './HeartbeatManager.js';
 import { InstanceManager } from './InstanceManager.js';
 import { AutoMemory } from './AutoMemory.js';
 import { LessonLearner } from './LessonLearner.js';
-import { MissionControlBridge } from './MissionControlBridge.js';
+import MissionControlBridge from './MissionControlBridge.js';
 import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
@@ -147,7 +147,7 @@ export class GramJSBridge {
     if (!fs.existsSync(this.workspacePath)) fs.mkdirSync(this.workspacePath, { recursive: true });
 
     // Tool executor
-    this.tools = new ToolExecutor();
+    this.tools = new ToolExecutor(config);
     this.tools.setWorkspace(this.workspacePath);
 
     // Persistent scheduler (survives restarts)
@@ -440,14 +440,51 @@ export class GramJSBridge {
             },
             onTaskDelegated: async (payload, fromInstance) => {
               // Another instance is delegating a task to us — process through AI with tools
-              console.log(`🎯 Task delegated from ${fromInstance}: "${payload.task}"`);
+              console.log(`🎯 Task delegated from ${fromInstance}: "${payload.task}" (replyToId: ${payload.replyToId || 'none'}, replyToUsername: ${payload.replyToUsername || 'none'})`);
               try {
-                // Set default peer context for tools (schedule, etc.) — use owner's chat
-                const ownerPeerId = this.config.whitelist?.[0] || '';
-                this._currentPeerId = String(ownerPeerId);
-                this._currentChatId = String(ownerPeerId);
+                // Resolve target: try username first (most reliable for uncached users), then ID, then whitelist
+                let targetPeerId = '';
+                if (payload.replyToUsername) {
+                  targetPeerId = payload.replyToUsername.replace(/^@/, '');
+                  console.log(`  🎯 Using username as target: ${targetPeerId}`);
+                }
+                if (!targetPeerId && payload.replyToId) {
+                  targetPeerId = payload.replyToId;
+                  console.log(`  🎯 Using ID as target: ${targetPeerId}`);
+                }
+                if (!targetPeerId) {
+                  targetPeerId = String(this.config.whitelist?.[0] || '');
+                  if (targetPeerId) console.log(`  🎯 Fallback to whitelist[0]: ${targetPeerId}`);
+                }
+                if (!targetPeerId) {
+                  console.warn(`⚠️ Task from ${fromInstance} rejected: no replyTo and no whitelist`);
+                  return { error: 'Delegation failed: no replyToId/replyToUsername provided and no default target. Include replyToId and replyToUsername in delegate_task.', status: 'failed' };
+                }
+                this._currentPeerId = String(targetPeerId);
+                this._currentChatId = String(payload.replyToId || targetPeerId);
 
-                const taskPrompt = `You received a task delegated from instance "${fromInstance}".\n\nTask: ${payload.task}${payload.context ? `\nContext: ${payload.context}` : ''}\n\nExecute this task using your available tools. Be concise in your response — return only the result/summary.`;
+                // Auto-add numeric ID to whitelist — try from replyToId, or resolve from username
+                if (this.config.whitelist) {
+                  let numId = payload.replyToId ? Number(payload.replyToId) : NaN;
+                  // If no numeric ID but we have username, resolve it to get the ID
+                  if (isNaN(numId) && payload.replyToUsername && this.gram?.client) {
+                    try {
+                      const entity = await this.gram.client.getEntity(payload.replyToUsername.replace(/^@/, ''));
+                      if (entity?.id) {
+                        numId = Number(entity.id.value || entity.id);
+                        console.log(`  🔍 Resolved ${payload.replyToUsername} → ID ${numId}`);
+                      }
+                    } catch {}
+                  }
+                  if (!isNaN(numId) && numId > 0 && !this.config.whitelist.includes(numId)) {
+                    this.config.whitelist.push(numId);
+                    console.log(`  📋 Auto-added ${numId} to whitelist for delegation`);
+                  }
+                }
+
+                const topicInfo = payload.replyToTopicId ? ` in topic/thread ${payload.replyToTopicId}` : '';
+                const replyToInfo = `\nReply target: Send any messages/reminders to "${targetPeerId}"${payload.replyToId ? ` (ID: ${payload.replyToId})` : ''}${topicInfo}. Use this as the target for schedule/send tools.`;
+                const taskPrompt = `You received a task delegated from instance "${fromInstance}".\n\nTask: ${payload.task}${payload.context ? `\nContext: ${payload.context}` : ''}${replyToInfo}\n\nExecute this task using your available tools. Be concise in your response — return only the result/summary.`;
                 
                 // Isolated tasks use workflow-only prompt (no personality)
                 const systemPrompt = this.workflowPrompt + '\n\n[DELEGATED TASK MODE] You are executing a task delegated from another instance. Focus on completing the task and returning a clear result.';
@@ -648,6 +685,7 @@ export class GramJSBridge {
       prompt += `\n\n## Multi-Instance Network\nYou are instance "${this.instanceMgr.instanceId}" (${this.instanceMgr.instanceName}).`;
       prompt += `\nYour scope: ${myScope}`;
       prompt += `\nIf a user request falls OUTSIDE your scope, use the \`delegate_task\` tool to delegate to the appropriate instance.`;
+      prompt += `\nIMPORTANT: When using delegate_task, ALWAYS include replyToId (current chat ID: ${this._currentChatId || 'unknown'}) and replyToUsername (sender's Telegram username if known) so the target instance can send messages.`;
       prompt += `\nAfter delegation, summarize the result to the user.`;
       
       // List peers (cached, refreshed on heartbeat)
@@ -1392,7 +1430,7 @@ Message: "${text.substring(0, 200)}"`;
     return patterns.some(p => p.test(cmd));
   }
 
-  async _callAIWithTools(chatId, systemPrompt, tools, currentQuery) {
+  async _callAIWithTools(chatId, systemPrompt, tools, currentQuery, extraOpts = {}) {
     // Build optimized conversation history for the AI (topic-aware)
     const activeTopic = this.topicMgr ? this.topicMgr.getActiveTopic(chatId) : null;
 
@@ -1440,6 +1478,25 @@ Message: "${text.substring(0, 200)}"`;
     const reduction = rawTotalBytes > 0 ? ((1 - totalBytes / rawTotalBytes) * 100).toFixed(0) : 0;
     console.log(`  📊 AI Input: ${(totalBytes / 1024).toFixed(1)}KB sent (system: ${(systemBytes / 1024).toFixed(1)}KB + history: ${(historyBytes / 1024).toFixed(1)}KB) | Raw: ${(rawTotalBytes / 1024).toFixed(1)}KB → ${(totalBytes / 1024).toFixed(1)}KB (${reduction}% reduced) | ${rawHistory.length} → ${messages.length - 1} msgs | ~${estTokens} tokens est`);
 
+    // Dump full AI request to file for debugging
+    try {
+      const debugDir = path.join(__dirname, '../../data/debug');
+      if (!fs.existsSync(debugDir)) fs.mkdirSync(debugDir, { recursive: true });
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      const debugPayload = messages.map((m, i) => ({
+        idx: i,
+        role: m.role,
+        chars: (m.content || '').length,
+        content: m.content,
+      }));
+      fs.writeFileSync(
+        path.join(debugDir, `ai-request-${ts}.json`),
+        JSON.stringify({ chatId, currentQuery, timestamp: new Date().toISOString(), toolCount: tools?.length || 0, tools: (tools || []).map(t => t.name || t.function?.name || 'unknown'), messages: debugPayload }, null, 2),
+        'utf-8'
+      );
+      console.log(`  🔍 Debug: AI request dumped to data/debug/ai-request-${ts}.json`);
+    } catch (e) { console.warn(`  ⚠️ Debug dump failed: ${e.message}`); }
+
     // Smart model routing based on complexity
     const complexity = await this._classifyComplexity(currentQuery || messages[messages.length - 1]?.content, chatId);
     let providerName, modelName;
@@ -1466,6 +1523,7 @@ Message: "${text.substring(0, 200)}"`;
         maxTokens,
         temperature: 0.7,
         ...(modelCfg.reasoning && { reasoning: modelCfg.reasoning }),
+        ...extraOpts,
       });
 
       // Track token usage
@@ -1517,6 +1575,10 @@ Message: "${text.substring(0, 200)}"`;
   }
 
   async _executeSingleTool(toolName, toolInput, imagePath) {
+    // Track tool calls for post-response validation
+    if (!this._lastToolCalls) this._lastToolCalls = [];
+    this._lastToolCalls.push(toolName);
+
     // Publish tool call event to Mission Control
     if (this.missionControl) {
       const summary = JSON.stringify(toolInput).substring(0, 100);
@@ -1638,7 +1700,7 @@ Message: "${text.substring(0, 200)}"`;
     } catch (error) {
       // Log tool error for lesson learning
       if (this.lessonLearner) {
-        this.lessonLearner.logError(toolName, toolInput, error.message || String(error), this._currentChatId).catch(() => {});
+        Promise.resolve(this.lessonLearner.logError(toolName, toolInput, error.message || String(error), this._currentChatId)).catch(() => {});
       }
       const msg = error.message || String(error);
       // Mask sensitive data in error messages
@@ -1689,33 +1751,19 @@ Message: "${text.substring(0, 200)}"`;
    * Returns true if the text contains "will do" patterns (aku cari, tunggu, aku cek, etc.)
    */
   _detectUnfulfilledPromise(text) {
-    if (!text || text.length > 2000) return false; // very long responses are likely complete answers
+    // Only detect VERY obvious cases where AI says it will do something but didn't
+    if (!text || text.length > 500) return false; // long responses are real answers
+    if (text.length > 200) return false; // medium responses are likely complete
     const lower = text.toLowerCase();
+    // Only match when text is SHORT and clearly just a promise without substance
     const promisePatterns = [
-      /aku (cari|cek|lihat|search|check|look|fetch|ambil|cobain|test|coba|update|ubah|buat|tulis|edit|perbaiki)/,
-      /aku akan (cari|cek|lihat|search|check|look|fetch|ambil|update|ubah|buat|tulis|edit|perbaiki)/,
-      /let me (search|check|look|find|try|fetch|get|update|create|write|fix|read|open|run|edit|modify|implement)/,
-      /now (let me|i'll|i will|let's)/,
-      /i('ll| will) (search|check|look|find|try|fetch|get|update|create|write|fix|now|read|run|edit|modify|implement)/,
-      /tunggu.*ya/,
-      /wait.*moment/,
-      /sebentar/,
-      /cari (lagi|dulu|info|data)/,
-      /cek (lagi|dulu|ulang)/,
-      /selanjutnya (aku|kita|saya)/,
-      /next(,| ) (i'll|i will|let me|let's)/,
-      /here'?s (what|how) i/,
-      /i('ll| will) (proceed|start|begin|continue)/,
-      /sekarang (aku|kita|saya) (akan|mau|perlu)/,
-      /mari (kita|aku|saya)/,
-      /langsung (kerjain|kerjakan|cek|baca|jalankan|implement|fix|buat|review)/,
-      /baca dulu/,
-      /lalu (implement|kerjain|fix|buat|execute)/,
+      /^(oke|ok|baik),?\s*(aku|saya|let me)\s*(akan|will|cek|check|cari|search)/i,
+      /^(tunggu|wait|sebentar)/i,
+      /^let me\s+(check|search|look|find|try)/i,
+      /(aku|saya)\s*(akan\s*)?(delegasi|delegasikan|delegate|kirim|minta)\s*(ke|to)/i,
     ];
-    // Also detect: text ends with ":" or "." with <100 chars (too short to be a real answer)
-    const endsWithColon = text.trim().endsWith(':');
-    const tooShortWithAction = text.length < 150 && /\b(kerjain|implement|baca|cek|fix|review|buat)\b/.test(lower);
-    return promisePatterns.some(p => p.test(lower)) || endsWithColon || tooShortWithAction;
+    const endsWithColon = text.trim().endsWith(':') && text.length < 80;
+    return promisePatterns.some(p => p.test(text.trim())) || endsWithColon;
   }
 
   /**
@@ -2006,11 +2054,13 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
       totalInputTokens += result.inputTokens || 0;
       totalOutputTokens += result.outputTokens || 0;
 
+      console.log(`  🔍 AI round ${round + 1}: toolCalls=${result.toolCalls?.length || 0}, text=${(result.text || '').length} chars: "${(result.text || '').substring(0, 80)}"`);
+
       if (!result.toolCalls || result.toolCalls.length === 0) {
         // Check if AI promised to do something but didn't use tools
         if (result.text && promiseRetries < 3 && this._detectUnfulfilledPromise(result.text)) {
           promiseRetries++;
-          console.log(`  ⚠️ AI promised action but no tool call — forcing follow-up (retry ${promiseRetries})`);
+          console.log(`  ⚠️ AI promised action but no tool call — forcing follow-up with tool_choice:any (retry ${promiseRetries})`);
           // Add the broken promise as context and force execution
           this._addToolRoundToHistory(chatId, result, []);
           if (this.conversationMgr) {
@@ -2018,6 +2068,24 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
               `[System: Kamu bilang "${result.text.substring(0, 100)}..." tapi tidak ada tindakan. JANGAN hanya bilang akan melakukan sesuatu — LANGSUNG gunakan tool yang sesuai SEKARANG. Jika tidak bisa, jelaskan kenapa ke user.]`
             );
           }
+          // Force tool use on next call
+          const forceResult = await this._callAIWithTools(chatId, systemPrompt, tools, currentQuery, { toolChoice: { type: 'any' } });
+          totalTokens += forceResult.tokensUsed || 0;
+          totalInputTokens += forceResult.inputTokens || 0;
+          totalOutputTokens += forceResult.outputTokens || 0;
+          if (forceResult.toolCalls && forceResult.toolCalls.length > 0) {
+            // Tool was forced — execute it
+            const toolResults = [];
+            for (const tc of forceResult.toolCalls) {
+              const output = await this._executeSingleTool(tc.name, tc.input, imagePath);
+              toolResults.push({ id: tc.id, result: output });
+            }
+            this._addToolRoundToHistory(chatId, forceResult, toolResults);
+            console.log(`  ✅ Forced tool call successful: ${forceResult.toolCalls.map(t => t.name).join(', ')}`);
+            continue; // continue loop for final response
+          }
+          // Still no tool calls even with force — give up
+          if (forceResult.text) return { responseText: forceResult.text, tokensUsed: totalTokens, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
           continue; // retry the round
         }
         // No tool calls = AI is done, return text response
@@ -2073,7 +2141,7 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
     if (this.conversationMgr) {
       this.conversationMgr.addMessage(chatId, 'user', `[System: Max tool rounds (${maxRounds}) reached. Berikan ringkasan progress sejauh ini ke user, apa yang sudah selesai, apa yang belum, dan tanya user mau lanjut yang mana atau ada instruksi lain.]`);
     }
-    const final = await this._callAIWithTools(chatId, systemPrompt, [], currentQuery);
+    const final = await this._callAIWithTools(chatId, systemPrompt, tools, currentQuery);
     return { responseText: final.text, tokensUsed: totalTokens + (final.tokensUsed || 0), inputTokens: totalInputTokens + (final.inputTokens || 0), outputTokens: totalOutputTokens + (final.outputTokens || 0) };
   }
 
@@ -2255,7 +2323,10 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
         let primaryText = null;
         let primaryImagePath = null;
         
-        // Process all messages in batch
+        // Process all messages in batch — combine into single user message
+        let replyHint = '';
+        const contentParts = [];
+        
         for (const batchItem of batchMessages) {
           const msg = batchItem.msg;
           const text = batchItem.text;
@@ -2264,6 +2335,8 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
             primaryMsg = msg;
             primaryPeerId = batchItem.peerId;
             primaryText = text;
+            primaryImagePath = batchItem.imagePath;
+          } else if (batchItem.imagePath && !primaryImagePath) {
             primaryImagePath = batchItem.imagePath;
           }
           
@@ -2280,7 +2353,7 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
 
           // Reply context: detect and inject replied-to message context
           let replyContext = null;
-          let replyHint = '';
+          let _replyHint = '';
           try {
             replyContext = await this._getReplyContext(msg, primaryPeerId, chatId);
             if (replyContext) {
@@ -2297,7 +2370,8 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
               }
               if (replyContext) {
                 userContent = `${replyContext.context}\n${userContent}`;
-                replyHint = replyContext.isComplex ? ' [Reply contains code/tool output]' : '';
+                _replyHint = replyContext.isComplex ? ' [Reply contains code/tool output]' : '';
+                replyHint = _replyHint;
               }
             }
           } catch (err) {
@@ -2316,20 +2390,24 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
               console.log(`  📎 File context attached: ${lastFile.name}`);
             }
           }
-          
-          // Classify topic and add to conversation
-          const msgTopic = this.topicMgr.classify(chatId, text || userContent, 'user');
-          this.conversationMgr.addMessage(chatId, 'user', userContent, msgTopic);
+
+          contentParts.push(userContent);
 
           // AutoMemory: track activity
           if (this.autoMemory) this.autoMemory.trackActivity(chatId, msg.senderName || chatId);
+        }
 
-          // LessonLearner: detect user corrections
-          if (this.lessonLearner && text) {
-            const history = this.conversationMgr.getRawHistory(chatId);
-            const prevAssistant = [...history].reverse().find(m => m.role === 'assistant');
-            this.lessonLearner.checkCorrection(text, prevAssistant?.content, chatId).catch(() => {});
-          }
+        // Combine batch into single user message
+        const combinedContent = contentParts.length === 1 ? contentParts[0] : contentParts.join('\n');
+        const msgTopic = this.topicMgr.classify(chatId, combinedContent, 'user');
+        this.conversationMgr.addMessage(chatId, 'user', combinedContent, msgTopic);
+        console.log(`  📝 Added ${contentParts.length} batched message(s) as 1 user message (${combinedContent.length} chars)`);
+
+        // LessonLearner: detect user corrections
+        if (this.lessonLearner && primaryText) {
+          const history = this.conversationMgr.getRawHistory(chatId);
+          const prevAssistant = [...history].reverse().find(m => m.role === 'assistant');
+          Promise.resolve(this.lessonLearner.checkCorrection(primaryText, prevAssistant?.content, chatId)).catch(() => {});
         }
 
         // Track current context for auto-async tool calls
@@ -2393,14 +2471,31 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
         if (!responseText || !responseText.trim()) {
           console.warn('⚠️ Empty response from AI — requesting summary');
           try {
-            const summaryResult = await this._callAIWithHistory(chatId, systemPrompt, null,
-              '[System: Kamu baru saja menjalankan beberapa tools tapi belum memberikan respons ke user. Berikan ringkasan singkat dari apa yang sudah kamu lakukan.]');
+            if (this.conversationMgr) {
+              this.conversationMgr.addMessage(chatId, 'user',
+                '[System: Kamu baru saja menjalankan beberapa tools tapi belum memberikan respons ke user. Berikan ringkasan singkat dari apa yang sudah kamu lakukan.]');
+            }
+            const summaryResult = await this._callAIWithTools(chatId, systemPrompt, this._getToolDefinitions(), text);
             responseText = summaryResult?.text || '';
-          } catch {}
+          } catch (e) { console.warn('⚠️ Summary fallback failed:', e.message); }
           if (!responseText || !responseText.trim()) {
             responseText = 'Proses selesai, tapi tidak ada output. Mau coba lagi dengan instruksi yang lebih spesifik?';
           }
         }
+
+        // Detect fake delegation claims - AI says "sudah delegate" but didn't actually call delegate_task
+        const claimsDelegation = /sudah (delegate|kirim|minta|delegasi)|already delegated|i('ve| have) delegated|(aku|saya)\s*(akan\s*)?(delegasi|delegasikan|delegate|kirim|minta)\s*(ke|to)/i.test(responseText);
+        const actuallyDelegated = this._lastToolCalls && this._lastToolCalls.some(t => t === 'delegate_task' || t === 'send_to_instance');
+        if (claimsDelegation && !actuallyDelegated) {
+          console.warn('⚠️ AI claimed delegation but no delegate_task tool was called — forcing retry');
+          if (this.conversationMgr) {
+            this.conversationMgr.addMessage(chatId, 'user',
+              '[System: You claimed you delegated a task but you did NOT actually call the delegate_task tool. You MUST use the delegate_task tool NOW to actually perform the delegation. Do not describe — execute.]');
+          }
+          const retryResult = await this._callAIWithTools(chatId, systemPrompt, this._getToolDefinitions(), text);
+          if (retryResult?.text) responseText = retryResult.text;
+        }
+        this._lastToolCalls = []; // reset
 
         // Parse response tags (REMEMBER, SCHEDULE, etc.)
         responseText = await this._parseResponseTags(responseText, peerId, chatId);
@@ -2458,6 +2553,13 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
           }
         }
 
+        // Save assistant response to conversation history
+        if (responseText && responseText.trim() && this.conversationMgr) {
+          const respTopic = this.topicMgr ? this.topicMgr.getActiveTopic(chatId) : null;
+          this.conversationMgr.addMessage(chatId, 'assistant', responseText, respTopic);
+          console.log(`  💾 Assistant response saved to history (${responseText.length} chars)`);
+        }
+
         // Stop typing
         if (typingInterval) clearInterval(typingInterval);
 
@@ -2468,11 +2570,13 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
         this.stats.record(msg.senderId || msg.message.senderId, msg.senderName, tokensUsed || 0, usedCfg.model, inTok || 0, outTok || 0);
         
         if (this.missionControl) {
-          const todayData = this.stats.getTodayData();
-          this.missionControl.updateState({
-            tokensToday: todayData.totalTokens || 0,
-            activeChats: this.chatQueue ? this.chatQueue.chats.size : 0,
-          }).catch(() => {});
+          try {
+            const todayData = this.stats.getTodayData();
+            this.missionControl.updateState({
+              tokensToday: todayData.totalTokens || 0,
+              activeChats: this.chatQueue ? this.chatQueue.chats.size : 0,
+            });
+          } catch (_) {}
         }
         
         const memStats = this.autoMemory?.getStats() || { todayCount: 0 };
@@ -2480,7 +2584,7 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
         console.log(`✅ Responded to ${msg.senderName} (${tokensUsed || '?'} tokens)${replyTo ? ' [reply]' : ''} | 📝 AutoMemory: ${memStats.todayCount} today | 🎓 Lessons: ${lessonStats.total} total`);
       } catch (err) {
         if (typingInterval) clearInterval(typingInterval);
-        console.error('❌ Bridge error:', err.message);
+        console.error('❌ Bridge error:', err.message, err.stack);
         
         if (this.missionControl) {
           this.missionControl.onError('bridge', err.message).catch(() => {});
@@ -2502,8 +2606,6 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
       return;
     }
 
-    const { Raw } = require('telegram/events/index.js');
-    
     this.gram.client.addEventHandler(async (update) => {
       try {
         const updateClass = update.className;
@@ -2540,8 +2642,82 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
       } catch (err) {
         // Silently ignore
       }
-    }, new Raw({}));
+    });
 
     console.log('👁️ Typing event handler registered');
+  }
+}
+
+class MessageBatcher {
+  constructor({ dmDelayMs = 5000, groupDelayMs = 30000, maxWaitMs = 30000, onBatchReady }) {
+    this.dmDelayMs = dmDelayMs;
+    this.groupDelayMs = groupDelayMs;
+    this.maxWaitMs = maxWaitMs;
+    this.onBatchReady = onBatchReady;
+    this.batches = new Map(); // key -> { messages, timer, startTime, isGroup, senderId }
+  }
+
+  _getKey(chatId, senderId, isGroup) {
+    return isGroup ? `${chatId}:${senderId}` : chatId;
+  }
+
+  addMessage(chatId, senderId, isGroup = false, message) {
+    const key = this._getKey(chatId, senderId, isGroup);
+    const delayMs = isGroup ? this.groupDelayMs : this.dmDelayMs;
+
+    if (!this.batches.has(key)) {
+      this.batches.set(key, {
+        messages: [],
+        timer: null,
+        startTime: Date.now(),
+        isGroup,
+        senderId,
+        chatId,
+      });
+    }
+
+    const batch = this.batches.get(key);
+    batch.messages.push(message);
+
+    // Clear existing timer
+    if (batch.timer) clearTimeout(batch.timer);
+
+    // Check max wait
+    const elapsed = Date.now() - batch.startTime;
+    if (elapsed >= this.maxWaitMs) {
+      this._flush(key);
+      return;
+    }
+
+    // Set new timer
+    const remaining = Math.min(delayMs, this.maxWaitMs - elapsed);
+    batch.timer = setTimeout(() => this._flush(key), remaining);
+  }
+
+  onTyping(chatId, userId, isGroup) {
+    const key = this._getKey(chatId, userId, isGroup);
+    const batch = this.batches.get(key);
+    if (!batch) return;
+
+    // Reset timer on typing activity
+    if (batch.timer) clearTimeout(batch.timer);
+    const elapsed = Date.now() - batch.startTime;
+    if (elapsed >= this.maxWaitMs) {
+      this._flush(key);
+      return;
+    }
+    const delayMs = isGroup ? this.groupDelayMs : this.dmDelayMs;
+    const remaining = Math.min(delayMs, this.maxWaitMs - elapsed);
+    batch.timer = setTimeout(() => this._flush(key), remaining);
+  }
+
+  _flush(key) {
+    const batch = this.batches.get(key);
+    if (!batch) return;
+    if (batch.timer) clearTimeout(batch.timer);
+    this.batches.delete(key);
+    if (batch.messages.length > 0) {
+      this.onBatchReady(batch.chatId, batch.messages, batch.senderId, batch.isGroup);
+    }
   }
 }

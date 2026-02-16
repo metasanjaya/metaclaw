@@ -117,7 +117,7 @@ If a simple answer suffices, give it without elaboration.`;
     if (minimaxKey) {
       this.providers.minimax = new MiniMaxProvider({
         apiKey: minimaxKey,
-        baseURL: remoteProviders.minimax?.baseURL
+        baseURL: remoteProviders.minimax?.base_url || remoteProviders.minimax?.baseURL
       });
       console.log('✅ MiniMax initialized');
     }
@@ -262,7 +262,7 @@ If a simple answer suffices, give it without elaboration.`;
       const result = await p.chatWithTools(
         messages, 
         tools,
-        { model: finalModel, maxTokens, temperature, ...(options.reasoning && { reasoning: options.reasoning }) }
+        { model: finalModel, maxTokens, temperature, ...(options.reasoning && { reasoning: options.reasoning }), ...(options.toolChoice && { toolChoice: options.toolChoice }) }
       );
       
       // Post-process text but preserve tool calls
