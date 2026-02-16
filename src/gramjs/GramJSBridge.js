@@ -1613,34 +1613,43 @@ Message: "${text.substring(0, 200)}"`;
       this.missionControl.onRoutingDecision(complexity, modelName, providerName).catch(() => {});
     }
 
-    // Call AI with tools
-    try {
-      const result = await this.ai.chatWithTools(messages, tools, {
-        provider: providerName,
-        model: modelName,
-        maxTokens,
-        temperature: 0.7,
-        ...(modelCfg.reasoning && { reasoning: modelCfg.reasoning }),
-        ...extraOpts,
-      });
+    // Call AI with tools (with retry on transient errors)
+    const maxRetries = 3;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const result = await this.ai.chatWithTools(messages, tools, {
+          provider: providerName,
+          model: modelName,
+          maxTokens,
+          temperature: 0.7,
+          ...(modelCfg.reasoning && { reasoning: modelCfg.reasoning }),
+          ...extraOpts,
+        });
 
-      // Track token usage
-      const tokensUsed = result.tokensUsed || 0;
-      // Stats tracking handled in main message handler via this.stats.record()
-      
-      // Track daily usage by model
-      const dayKey = new Date().toISOString().split('T')[0];
-      if (!this.costTracker[modelName]) {
-        this.costTracker[modelName] = { total: 0, daily: {} };
+        // Track token usage
+        const tokensUsed = result.tokensUsed || 0;
+        
+        // Track daily usage by model
+        const dayKey = new Date().toISOString().split('T')[0];
+        if (!this.costTracker[modelName]) {
+          this.costTracker[modelName] = { total: 0, daily: {} };
+        }
+        this.costTracker[modelName].total += tokensUsed;
+        this.costTracker[modelName].daily[dayKey] = (this.costTracker[modelName].daily[dayKey] || 0) + tokensUsed;
+
+        return result;
+      } catch (error) {
+        const isRetryable = /529|overload|rate.limit|timeout|ECONNRESET|ETIMEDOUT|503|502/i.test(error.message);
+        if (isRetryable && attempt < maxRetries) {
+          const delay = (attempt + 1) * 10000;
+          console.warn(`  ⚠️ Retryable AI error (attempt ${attempt + 1}/${maxRetries}): ${error.message}. Retrying in ${delay/1000}s...`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        console.error(`❌ AI call failed: ${error.message}`);
+        if (error.response?.data) console.error(`   📋 Response:`, JSON.stringify(error.response.data).slice(0, 500));
+        throw error;
       }
-      this.costTracker[modelName].total += tokensUsed;
-      this.costTracker[modelName].daily[dayKey] = (this.costTracker[modelName].daily[dayKey] || 0) + tokensUsed;
-
-      return result;
-    } catch (error) {
-      console.error(`❌ AI call failed: ${error.message}`);
-      if (error.response?.data) console.error(`   📋 Response:`, JSON.stringify(error.response.data).slice(0, 500));
-      throw error;
     }
   }
 
