@@ -68,6 +68,14 @@ function loadPersonalityOnly() {
   return prompt;
 }
 
+function loadMyRules() {
+  const myRulesPath = path.join(__dirname, '../../personality/MY_RULES.md');
+  if (fs.existsSync(myRulesPath)) {
+    return '\n\n' + fs.readFileSync(myRulesPath, 'utf-8').trim();
+  }
+  return '';
+}
+
 function loadWorkflowOnly() {
   const pDir = path.join(__dirname, '../../personality');
   let prompt = 'You are a task executor. Complete the task efficiently.\n\n';
@@ -76,6 +84,8 @@ function loadWorkflowOnly() {
   if (fs.existsSync(workflowPath)) {
     prompt += fs.readFileSync(workflowPath, 'utf-8').trim() + '\n\n';
   }
+  // Load MY_RULES.md — instance-specific learned rules
+  prompt += loadMyRules();
   // Tool instructions (native function calling)
   prompt += `## Tools
 You have tools available via native function calling. Use them directly — NEVER describe what you would do, just DO IT.
@@ -99,6 +109,9 @@ function loadCorePersonality() {
   if (fs.existsSync(workflowPath)) {
     prompt += fs.readFileSync(workflowPath, 'utf-8').trim() + '\n\n';
   }
+  // Load MY_RULES.md — instance-specific learned rules
+  prompt += loadMyRules();
+
   if (!prompt) {
     prompt = 'You are a helpful AI assistant. Be concise and friendly.';
   }
