@@ -248,10 +248,28 @@ export class AnthropicProvider extends BaseProvider {
     for (const msg of messages) {
       if (msg.role === lastRole) {
         // Merge with previous if same role
-        if (typeof result[result.length - 1].content === 'string' && typeof msg.content === 'string') {
-          result[result.length - 1].content += '\n\n' + msg.content;
-        } else {
-          // For complex content blocks, just add separator
+        const prev = result[result.length - 1];
+        const prevContent = prev.content;
+        const curContent = msg.content;
+
+        // Both strings → concat
+        if (typeof prevContent === 'string' && typeof curContent === 'string') {
+          prev.content = prevContent + '\n\n' + curContent;
+        }
+        // Both arrays → merge blocks (e.g. multiple tool_result blocks)
+        else if (Array.isArray(prevContent) && Array.isArray(curContent)) {
+          prev.content = [...prevContent, ...curContent];
+        }
+        // String + array → convert string to text block, merge
+        else if (typeof prevContent === 'string' && Array.isArray(curContent)) {
+          prev.content = [{ type: 'text', text: prevContent }, ...curContent];
+        }
+        // Array + string → append as text block
+        else if (Array.isArray(prevContent) && typeof curContent === 'string') {
+          prev.content = [...prevContent, { type: 'text', text: curContent }];
+        }
+        // Fallback: insert separator
+        else {
           result.push({ role: msg.role === 'user' ? 'assistant' : 'user', content: '...' });
           result.push(msg);
         }
