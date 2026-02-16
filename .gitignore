@@ -68,3 +68,10 @@ personality/HOWTO.md
 config.yaml
 data/setup-codes.json
 personality/MY_RULES.md
+-e 
+PROJECT_APP-backoffice/
+PROJECT_APP-gateway/
+IDENTITY.md
+MEMORY.md
+SOUL.md
+USER.md
