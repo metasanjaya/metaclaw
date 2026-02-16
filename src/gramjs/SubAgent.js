@@ -406,22 +406,28 @@ export class SubAgent {
         toolResults.push({ id: tc.id, result });
       }
 
-      // Push messages in the format providers expect:
-      // 1. Assistant message with toolCalls
-      // 2. User message with toolResults
+      // Push messages in the format Anthropic provider expects:
+      // 1. Assistant message with tool_calls (OpenAI format — provider converts to Anthropic)
+      // 2. Individual tool result messages (role: 'tool')
       task.messages.push({
         role: 'assistant',
-        content: aiResponse.text || '',
-        toolCalls: aiResponse.toolCalls,
-      });
-
-      task.messages.push({
-        role: 'user',
-        toolResults: toolResults.map(tr => ({
-          id: tr.id,
-          result: typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result),
+        content: aiResponse.text || null,
+        tool_calls: aiResponse.toolCalls.map(tc => ({
+          id: tc.id,
+          function: {
+            name: tc.name,
+            arguments: typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input),
+          },
         })),
       });
+
+      for (const tr of toolResults) {
+        task.messages.push({
+          role: 'tool',
+          tool_call_id: tr.id,
+          content: typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result),
+        });
+      }
 
       // Progress reporting
       if (task.turnCount % task.reportEvery === 0) {
