@@ -204,7 +204,7 @@ export class SubAgent {
 
       // Limits
       maxTurns: opts.maxTurns || this.config?.tools?.max_rounds || 200,
-      timeout: opts.timeout || 600000,
+      timeout: opts.timeout || 3600000,
       allowedTools: opts.tools || null, // null = all
 
       // Communication
