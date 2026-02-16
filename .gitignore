@@ -68,3 +68,10 @@ personality/HOWTO.md
 config.yaml
 data/setup-codes.json
 personality/MY_RULES.md
+-e 
+ular28-backoffice/
+ular28-gateway/
+IDENTITY.md
+MEMORY.md
+SOUL.md
+USER.md
