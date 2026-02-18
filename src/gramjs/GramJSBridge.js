@@ -136,6 +136,7 @@ export class GramJSBridge {
     this.config = config;
     this.gram = gramClient;
     this.conversationMgr = null; // initialized after embedder is ready
+    this._autonomousChats = new Set(); // chatIds in autonomous "just do it" mode
     this.topicMgr = new TopicManager();
     this._complexityCache = {}; // Cache complexity per chat for continuation
 
@@ -454,60 +455,81 @@ export class GramJSBridge {
             },
             onTaskDelegated: async (payload, fromInstance) => {
               // Another instance is delegating a task to us — process through AI with tools
-              console.log(`🎯 Task delegated from ${fromInstance}: "${payload.task}" (replyToId: ${payload.replyToId || 'none'}, replyToUsername: ${payload.replyToUsername || 'none'})`);
+              const replyBack = payload.replyBack !== false; // default true
+              console.log(`🎯 Task delegated from ${fromInstance}: "${payload.task}" (replyBack: ${replyBack}, replyToId: ${payload.replyToId || 'none'}, replyToUsername: ${payload.replyToUsername || 'none'})`);
               try {
-                // Resolve target: try username first (most reliable for uncached users), then ID, then whitelist
                 let targetPeerId = '';
-                if (payload.replyToUsername) {
-                  targetPeerId = payload.replyToUsername.replace(/^@/, '');
-                  console.log(`  🎯 Using username as target: ${targetPeerId}`);
-                }
-                if (!targetPeerId && payload.replyToId) {
-                  targetPeerId = payload.replyToId;
-                  console.log(`  🎯 Using ID as target: ${targetPeerId}`);
-                }
-                if (!targetPeerId) {
-                  targetPeerId = String(this.config.whitelist?.[0] || '');
-                  if (targetPeerId) console.log(`  🎯 Fallback to whitelist[0]: ${targetPeerId}`);
-                }
-                if (!targetPeerId) {
-                  console.warn(`⚠️ Task from ${fromInstance} rejected: no replyTo and no whitelist`);
-                  return { error: 'Delegation failed: no replyToId/replyToUsername provided and no default target. Include replyToId and replyToUsername in delegate_task.', status: 'failed' };
-                }
-                this._currentPeerId = String(targetPeerId);
-                this._currentChatId = String(payload.replyToId || targetPeerId);
+                let taskPrompt;
 
-                // Auto-add numeric ID to whitelist — try from replyToId, or resolve from username
-                if (this.config.whitelist) {
-                  let numId = payload.replyToId ? Number(payload.replyToId) : NaN;
-                  // If no numeric ID but we have username, resolve it to get the ID
-                  if (isNaN(numId) && payload.replyToUsername && this.gram?.client) {
-                    try {
-                      const entity = await this.gram.client.getEntity(payload.replyToUsername.replace(/^@/, ''));
-                      if (entity?.id) {
-                        numId = Number(entity.id.value || entity.id);
-                        console.log(`  🔍 Resolved ${payload.replyToUsername} → ID ${numId}`);
-                      }
-                    } catch {}
+                if (replyBack) {
+                  // SILENT MODE: Process task without messaging the human.
+                  // The delegator will handle reporting the result.
+                  // Still need a peer context for tool execution, use whitelist[0] or a dummy
+                  targetPeerId = String(this.config.whitelist?.[0] || 'system');
+                  this._currentPeerId = String(targetPeerId);
+                  this._currentChatId = String(payload.replyToId || targetPeerId);
+
+                  taskPrompt = `You received a task delegated from instance "${fromInstance}".\n\nTask: ${payload.task}${payload.context ? `\nContext: ${payload.context}` : ''}\n\n⚠️ IMPORTANT: Do NOT send any messages to the user. The delegating instance will handle reporting. Just execute the task and return your result/summary as your final response.`;
+                } else {
+                  // DIRECT MODE (legacy): Target instance messages the human directly
+                  // Resolve target: try username first, then ID, then whitelist
+                  if (payload.replyToUsername) {
+                    targetPeerId = payload.replyToUsername.replace(/^@/, '');
+                    console.log(`  🎯 Using username as target: ${targetPeerId}`);
                   }
-                  if (!isNaN(numId) && numId > 0 && !this.config.whitelist.includes(numId)) {
-                    this.config.whitelist.push(numId);
-                    console.log(`  📋 Auto-added ${numId} to whitelist for delegation`);
+                  if (!targetPeerId && payload.replyToId) {
+                    targetPeerId = payload.replyToId;
+                    console.log(`  🎯 Using ID as target: ${targetPeerId}`);
                   }
+                  if (!targetPeerId) {
+                    targetPeerId = String(this.config.whitelist?.[0] || '');
+                    if (targetPeerId) console.log(`  🎯 Fallback to whitelist[0]: ${targetPeerId}`);
+                  }
+                  if (!targetPeerId) {
+                    console.warn(`⚠️ Task from ${fromInstance} rejected: no replyTo and no whitelist`);
+                    return { error: 'Delegation failed: no replyToId/replyToUsername provided and no default target. Include replyToId and replyToUsername in delegate_task.', status: 'failed' };
+                  }
+                  this._currentPeerId = String(targetPeerId);
+                  this._currentChatId = String(payload.replyToId || targetPeerId);
+
+                  // Auto-add numeric ID to whitelist
+                  if (this.config.whitelist) {
+                    let numId = payload.replyToId ? Number(payload.replyToId) : NaN;
+                    if (isNaN(numId) && payload.replyToUsername && this.gram?.client) {
+                      try {
+                        const entity = await this.gram.client.getEntity(payload.replyToUsername.replace(/^@/, ''));
+                        if (entity?.id) {
+                          numId = Number(entity.id.value || entity.id);
+                          console.log(`  🔍 Resolved ${payload.replyToUsername} → ID ${numId}`);
+                        }
+                      } catch {}
+                    }
+                    if (!isNaN(numId) && numId > 0 && !this.config.whitelist.includes(numId)) {
+                      this.config.whitelist.push(numId);
+                      console.log(`  📋 Auto-added ${numId} to whitelist for delegation`);
+                    }
+                  }
+
+                  const topicInfo = payload.replyToTopicId ? ` in topic/thread ${payload.replyToTopicId}` : '';
+                  const replyToInfo = `\nReply target: Send any messages/reminders to "${targetPeerId}"${payload.replyToId ? ` (ID: ${payload.replyToId})` : ''}${topicInfo}. Use this as the target for schedule/send tools.`;
+                  taskPrompt = `You received a task delegated from instance "${fromInstance}".\n\nTask: ${payload.task}${payload.context ? `\nContext: ${payload.context}` : ''}${replyToInfo}\n\nExecute this task using your available tools. Be concise in your response — return only the result/summary.`;
                 }
 
-                const topicInfo = payload.replyToTopicId ? ` in topic/thread ${payload.replyToTopicId}` : '';
-                const replyToInfo = `\nReply target: Send any messages/reminders to "${targetPeerId}"${payload.replyToId ? ` (ID: ${payload.replyToId})` : ''}${topicInfo}. Use this as the target for schedule/send tools.`;
-                const taskPrompt = `You received a task delegated from instance "${fromInstance}".\n\nTask: ${payload.task}${payload.context ? `\nContext: ${payload.context}` : ''}${replyToInfo}\n\nExecute this task using your available tools. Be concise in your response — return only the result/summary.`;
-                
                 // Isolated tasks use workflow-only prompt (no personality)
                 const systemPrompt = this.workflowPrompt + '\n\n[DELEGATED TASK MODE] You are executing a task delegated from another instance. Focus on completing the task and returning a clear result.';
                 const maxRounds = this.config?.tools?.max_rounds || 20;
+                
+                // In replyBack mode, exclude messaging tools to prevent direct human contact
+                const excludeTools = ['delegate_task', 'send_to_instance', 'broadcast_instances', 'request_instance'];
+                if (replyBack) {
+                  excludeTools.push('send_file', 'send_voice', 'send_sticker');  // prevent direct messaging in silent mode
+                }
+                
                 const { responseText } = await this._processIsolated(systemPrompt, taskPrompt, maxRounds, {
-                  excludeTools: ['delegate_task', 'send_to_instance', 'broadcast_instances', 'request_instance'],
+                  excludeTools,
                 });
                 
-                console.log(`✅ Task from ${fromInstance} completed: "${(responseText || '').substring(0, 100)}"`);
+                console.log(`✅ Task from ${fromInstance} completed (replyBack: ${replyBack}): "${(responseText || '').substring(0, 100)}"`);
                 return { result: responseText || 'Task completed (no output)', status: 'success' };
               } catch (err) {
                 console.error(`❌ Task from ${fromInstance} failed:`, err.message);
@@ -643,6 +665,19 @@ export class GramJSBridge {
 
     let prompt = this.corePrompt + runtimeCtx;
 
+    // Autonomous mode injection
+    if (chatId && this._autonomousChats.has(chatId)) {
+      prompt += `\n\n## 🤖 AUTONOMOUS MODE ACTIVE
+User has requested you to continue working without asking for confirmation.
+- DO NOT ask "kalau mau", "mau lanjut?", "want me to continue?" — JUST DO IT
+- DO NOT offer options — pick the best one and execute
+- DO NOT stop to report intermediate progress — keep working
+- ONLY stop if you are genuinely stuck (error you can't fix) or ALL tasks are complete
+- After each step, immediately proceed to the next one using tools
+- Report ONLY when everything is done or when you hit an unrecoverable blocker
+`;
+    }
+
     // Knowledge Base: inject relevant facts
     if (this.knowledge) {
       const kb = this.knowledge.buildContext(userMessage);
@@ -712,7 +747,8 @@ export class GramJSBridge {
       prompt += `\n\n## Multi-Instance Network\nYou are instance "${this.instanceMgr.instanceId}" (${this.instanceMgr.instanceName}).`;
       prompt += `\nYour scope: ${myScope}`;
       prompt += `\nIf a user request falls OUTSIDE your scope, use the \`delegate_task\` tool to delegate to the appropriate instance.`;
-      prompt += `\nIMPORTANT: When using delegate_task, ALWAYS include replyToId (current chat ID: ${this._currentChatId || 'unknown'}) and replyToUsername (sender's Telegram username if known) so the target instance can send messages.`;
+      prompt += `\nIMPORTANT: When using delegate_task, ALWAYS include replyToId (current chat ID: ${this._currentChatId || 'unknown'}) and replyToUsername (sender's Telegram username if known).`;
+      prompt += `\nBy default, replyBack=true — the target instance will process silently and return the result to YOU. You then report the result to the user. Set replyBack=false only if you want the target to message the user directly.`;
       prompt += `\nAfter delegation, summarize the result to the user.`;
       
       // List peers (cached, refreshed on heartbeat)
@@ -726,31 +762,6 @@ export class GramJSBridge {
           }
         }
       } catch {}
-    }
-
-    // Inject active tasks awareness
-    const activeTasksParts = [];
-    if (this.asyncTasks) {
-      const running = this.asyncTasks.listPending();
-      if (running.length > 0) {
-        activeTasksParts.push('⚡ RUNNING ASYNC TASKS:');
-        for (const t of running) {
-          const elapsed = ((Date.now() - t.startedAt) / 1000).toFixed(0);
-          activeTasksParts.push(`  [${t.id}] ${t.cmd.substring(0, 80)} (${elapsed}s)`);
-        }
-      }
-    }
-    if (this.subAgent) {
-      const agents = this.subAgent.listAll().filter(a => !['completed', 'failed', 'aborted'].includes(a.status));
-      if (agents.length > 0) {
-        activeTasksParts.push('🤖 ACTIVE SUB-AGENTS:');
-        for (const a of agents) {
-          activeTasksParts.push(`  [${a.id}] ${a.goal.substring(0, 80)} (${a.status}, turn ${a.turns})`);
-        }
-      }
-    }
-    if (activeTasksParts.length > 0) {
-      prompt += `\n\n## ⚠️ Active Tasks (DO NOT create duplicates!)\n${activeTasksParts.join('\n')}\nBefore spawning new tasks/schedules, check if a similar one already exists above.`;
     }
 
     // 📊 Context size logging
@@ -1489,7 +1500,7 @@ Message: "${text.substring(0, 200)}"`;
       },
       {
         name: "schedule",
-        description: "Create, list, or remove scheduled reminders/tasks. IMPORTANT: Before adding, call active_tasks to check for duplicates. Never re-schedule a task that already exists or is already running as an async task/sub-agent.",
+        description: "Create, list, or remove scheduled reminders/tasks. Use this to set reminders, recurring checks, or scheduled messages.",
         params: {
           action: { type: "string", description: "Action: 'add', 'list', or 'remove'" },
           message: { type: "string", description: "Reminder text or task description (required for add)" },
@@ -1501,7 +1512,7 @@ Message: "${text.substring(0, 200)}"`;
       },
       {
         name: "spawn_subagent",
-        description: "Spawn a background AI sub-agent for complex, multi-step, or long-running tasks. IMPORTANT: Call active_tasks first — if a similar task is already running, report status instead of spawning duplicate. The sub-agent works autonomously and reports back when done.",
+        description: "Spawn a background AI sub-agent for complex, multi-step, or long-running tasks. The sub-agent works autonomously and reports back when done. Use for: code changes, research, file operations, deployments, anything that takes multiple steps.",
         params: {
           goal: { type: "string", description: "Clear description of the task to accomplish" },
           type: { type: "string", description: "Task type: 'code' (coding/file changes), 'research' (web search/analysis), 'general' (other). Default: 'general'" }
@@ -1525,13 +1536,8 @@ Message: "${text.substring(0, 200)}"`;
         }
       },
       {
-        name: "active_tasks",
-        description: "Check all currently running tasks, sub-agents, and scheduled jobs. ALWAYS call this BEFORE spawning new tasks or schedules to avoid duplicates. Returns running async tasks, active sub-agents, and pending schedules.",
-        params: {}
-      },
-      {
         name: "async_shell",
-        description: "Run a long-running shell command in the background (non-blocking). IMPORTANT: Call active_tasks first to check if the same command is already running. Use for: apt install, npm install, docker build, git clone, deployments, anything >10 seconds. Returns immediately, notifies when done.",
+        description: "Run a long-running shell command in the background (non-blocking). Use for: apt install, npm install, docker build, git clone, deployments, anything >10 seconds. Returns immediately, notifies when done.",
         params: {
           command: { type: "string", description: "Shell command to run" },
           analysis_prompt: { type: "string", description: "Optional: AI prompt to analyze the output when done" },
@@ -1703,7 +1709,7 @@ Message: "${text.substring(0, 200)}"`;
           provider: providerName,
           model: modelName,
           maxTokens,
-          temperature: 0.7,
+          temperature: modelCfg.temperature ?? 0.7,
           ...(modelCfg.reasoning && { reasoning: modelCfg.reasoning }),
           ...extraOpts,
         });
@@ -1892,30 +1898,6 @@ Message: "${text.substring(0, 200)}"`;
           if (!this.subAgent) return '❌ SubAgent system not initialized';
           const goal = toolInput.goal;
           if (!goal) return 'Error: "goal" is required';
-
-          // Check for duplicate: active sub-agent with similar goal
-          const activeAgents = this.subAgent.listAll().filter(a => !['completed', 'failed', 'aborted'].includes(a.status));
-          const similarAgent = activeAgents.find(a => {
-            // Fuzzy match: check if goals share >50% words
-            const goalWords = new Set(goal.toLowerCase().split(/\s+/));
-            const existingWords = new Set(a.goal.toLowerCase().split(/\s+/));
-            const overlap = [...goalWords].filter(w => existingWords.has(w)).length;
-            return overlap / Math.max(goalWords.size, existingWords.size) > 0.5;
-          });
-          if (similarAgent) {
-            return `⚠️ Similar sub-agent already running!\n  [${similarAgent.id}] "${similarAgent.goal}" (status: ${similarAgent.status}, turns: ${similarAgent.turns})\n\nUse active_tasks to check status. Do NOT spawn duplicate.`;
-          }
-
-          // Check running async tasks for similar commands
-          if (this.asyncTasks) {
-            const runningTasks = this.asyncTasks.listPending();
-            if (runningTasks.length > 0) {
-              const taskList = runningTasks.map(t => `  [${t.id}] ${t.cmd.substring(0, 80)}`).join('\n');
-              // Don't block, just inform
-              console.log(`  🤖 SpawnSubagent: ${runningTasks.length} async tasks running while spawning`);
-            }
-          }
-
           const peerId = this._currentPeerId || '';
           const chatId = this._currentChatId || '';
           const taskId = await this.subAgent.spawn({
@@ -1961,61 +1943,13 @@ Message: "${text.substring(0, 200)}"`;
           return '❌ MemoryManager not initialized';
         }
 
-        case 'active_tasks': {
-          const parts = [];
-          
-          // Running async tasks
-          if (this.asyncTasks) {
-            const running = this.asyncTasks.listPending();
-            if (running.length > 0) {
-              parts.push('⚡ RUNNING ASYNC TASKS:');
-              for (const t of running) {
-                const elapsed = ((Date.now() - t.startedAt) / 1000).toFixed(0);
-                parts.push(`  [${t.id}] ${t.cmd.substring(0, 100)} (${elapsed}s elapsed)`);
-              }
-            } else {
-              parts.push('⚡ No running async tasks.');
-            }
-          }
-
-          // Active sub-agents
-          if (this.subAgent) {
-            const agents = this.subAgent.listAll().filter(a => !['completed', 'failed', 'aborted'].includes(a.status));
-            if (agents.length > 0) {
-              parts.push('\n🤖 ACTIVE SUB-AGENTS:');
-              for (const a of agents) {
-                parts.push(`  [${a.id}] ${a.goal} (status: ${a.status}, turns: ${a.turns})`);
-              }
-            } else {
-              parts.push('\n🤖 No active sub-agents.');
-            }
-          }
-
-          // Pending schedules (next 24h)
-          if (this.scheduler) {
-            const jobs = this.scheduler.listAll();
-            const next24h = jobs.filter(j => j.triggerAt <= Date.now() + 86400000);
-            if (next24h.length > 0) {
-              parts.push('\n📅 SCHEDULED JOBS (next 24h):');
-              for (const j of next24h) {
-                const time = new Date(j.triggerAt).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
-                parts.push(`  [${j.id.slice(0, 8)}] ${j.message.substring(0, 80)} (${time} WIB, type: ${j.type})`);
-              }
-            } else {
-              parts.push('\n📅 No scheduled jobs in next 24h.');
-            }
-          }
-
-          return parts.join('\n');
-        }
-
         case 'async_shell': {
           if (!toolInput.command) return 'Error: "command" is required';
           if (this.asyncTasks) {
-            const taskId = await this.asyncTasks.run({
-              command: toolInput.command,
-              analysisPrompt: toolInput.analysis_prompt,
-              timeout: toolInput.timeout || 120,
+            const taskId = this.asyncTasks.add({
+              cmd: toolInput.command,
+              msg: toolInput.analysis_prompt || '',
+              timeout: (toolInput.timeout || 120) * 1000,
               peerId: String(this._currentPeerId || ''),
               chatId: String(this._currentChatId || ''),
             });
@@ -2156,20 +2090,94 @@ Message: "${text.substring(0, 200)}"`;
    * Detect if AI response promises to do something without actually doing it.
    * Returns true if the text contains "will do" patterns (aku cari, tunggu, aku cek, etc.)
    */
-  _detectUnfulfilledPromise(text) {
-    // Only detect VERY obvious cases where AI says it will do something but didn't
-    if (!text || text.length > 500) return false; // long responses are real answers
-    if (text.length > 200) return false; // medium responses are likely complete
-    const lower = text.toLowerCase();
-    // Only match when text is SHORT and clearly just a promise without substance
-    const promisePatterns = [
-      /^(oke|ok|baik),?\s*(aku|saya|let me)\s*(akan|will|cek|check|cari|search)/i,
-      /^(tunggu|wait|sebentar)/i,
-      /^let me\s+(check|search|look|find|try)/i,
-      /(aku|saya)\s*(akan\s*)?(delegasi|delegasikan|delegate|kirim|minta)\s*(ke|to)/i,
-    ];
-    const endsWithColon = text.trim().endsWith(':') && text.length < 80;
-    return promisePatterns.some(p => p.test(text.trim())) || endsWithColon;
+  /**
+   * Detect if AI response is NOT a final answer — uses AI classifier (language-agnostic).
+   * Parse text-based [TOOL_CALL] blocks that some models emit instead of native tool_use.
+   * Returns array of { id, name, input } objects.
+   */
+  _parseTextToolCalls(text) {
+    if (!text || !text.includes('[TOOL_CALL]')) return [];
+    const calls = [];
+    const regex = /\[TOOL_CALL\]\s*\{?\s*(?:tool\s*=>?\s*"([^"]+)")?[\s\S]*?\[\/TOOL_CALL\]/g;
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      const block = match[0];
+      // Extract tool name
+      const nameMatch = block.match(/tool\s*=>?\s*"([^"]+)"/);
+      if (!nameMatch) continue;
+      const toolName = nameMatch[1];
+      // Extract parameters
+      const input = {};
+      const paramRegex = /<parameter\s+name="([^"]+)">([\s\S]*?)<\/parameter>/g;
+      let pm;
+      while ((pm = paramRegex.exec(block)) !== null) {
+        let val = pm[2].trim();
+        // Try to parse numbers
+        if (/^\d+$/.test(val)) val = parseInt(val, 10);
+        input[pm[1]] = val;
+      }
+      calls.push({ id: `text-tool-${Date.now()}-${calls.length}`, name: toolName, input });
+    }
+    return calls;
+  }
+
+  /**
+   * Only activates during active task sessions (previous rounds had tool calls).
+   * Uses fast/cheap intent model for classification (~50 tokens).
+   */
+  async _detectIncompleteResponse(text, hasToolHistory = false, chatId = null) {
+    if (!text) return false;
+    if (!hasToolHistory) return false;
+    
+    // In autonomous mode, almost everything is incomplete unless truly done
+    const isAutonomous = chatId && this._autonomousChats.has(chatId);
+    
+    // Quick heuristics first (no AI call needed)
+    const lastLine = text.trim().split('\n').pop().trim();
+    if (!isAutonomous && lastLine.endsWith('?')) return false;  // question → complete (but not in autonomous)
+    if (text.length < 30) return false;         // short confirmation → complete
+    
+    // In autonomous mode, questions like "kalau mau?" are INCOMPLETE
+    if (isAutonomous && lastLine.endsWith('?')) return true;
+    
+    // Use AI classifier — language-agnostic, works for any language
+    try {
+      const intentCfg = this.config.models?.intent || { provider: 'google', model: 'gemini-2.5-flash' };
+      const result = await this.ai.generate(
+        `You are a response classifier. An AI assistant with tools (shell, file ops, etc.) generated this response during an active task. Does the response indicate the AI WILL take more action (run commands, execute steps, continue working), or is it a COMPLETE final answer to the user?
+
+Response to classify:
+"""
+${text.substring(0, 500)}
+"""
+
+Rules:
+- If the AI says it will do something next (run, execute, check, fix, deploy, etc.) → PENDING
+- If the AI asks the user to run commands or paste output → PENDING  
+- If the AI describes a plan then says it will execute → PENDING
+- If the AI is BLOCKED and cannot proceed (missing credentials, access denied, waiting for external action, DNS not configured) → COMPLETE (it reported the blocker)
+- If the AI offers optional next steps but the main task is done or blocked → COMPLETE
+- If the AI is reporting a status/summary of what was accomplished → COMPLETE
+- If the AI has genuinely finished ALL work and is reporting final results → COMPLETE
+- If there are clearly more actionable steps the AI CAN do → PENDING
+
+Reply with ONLY one word: PENDING or COMPLETE`,
+        { provider: intentCfg.provider, model: intentCfg.model, maxTokens: 30, temperature: intentCfg.temperature ?? 0 }
+      );
+      const answer = (result?.text || result?.content || '').trim().toUpperCase();
+      console.log(`  🧠 AI classifier raw: "${answer}"`);
+      // Empty response = classifier failed, assume PENDING (safer to retry)
+      if (!answer) {
+        console.log(`  🧠 AI classifier: empty response, assuming PENDING`);
+        return true;
+      }
+      const isPending = answer.includes('PEND') || !answer.includes('COMPLETE');
+      console.log(`  🧠 AI classifier result: ${isPending ? 'PENDING' : 'COMPLETE'}`);
+      return isPending;
+    } catch (err) {
+      console.warn(`  ⚠️ Incomplete detection classifier failed: ${err.message}`);
+      return false;
+    }
   }
 
   /**
@@ -2383,7 +2391,7 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
         provider: modelCfg.provider,
         model: modelCfg.model,
         maxTokens,
-        temperature: 0.7,
+        temperature: modelCfg.temperature ?? 0.7,
       });
       totalTokens += result.tokensUsed || 0;
       totalInputTokens += result.inputTokens || 0;
@@ -2449,7 +2457,7 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
 
-    let promiseRetries = 0; // track "promise to act" retries
+    let incompleteRetries = 0; // track "promise to act" retries
 
     // Check skill triggers
     if (this.skillMgr && currentQuery) {
@@ -2457,7 +2465,17 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
     }
 
     for (let round = 0; round < maxRounds; round++) {
-      const result = await this._callAIWithTools(chatId, systemPrompt, tools, currentQuery);
+      let result;
+      try {
+        result = await this._callAIWithTools(chatId, systemPrompt, tools, currentQuery);
+      } catch (aiErr) {
+        console.error(`  ❌ AI call error in round ${round + 1}: ${aiErr.message}`);
+        return { responseText: `⚠️ Error: ${aiErr.message}`, tokensUsed: totalTokens, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
+      }
+      if (!result) {
+        console.error(`  ❌ AI returned undefined in round ${round + 1}`);
+        return { responseText: '⚠️ AI tidak merespon. Coba lagi.', tokensUsed: totalTokens, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
+      }
       totalTokens += result.tokensUsed || 0;
       totalInputTokens += result.inputTokens || 0;
       totalOutputTokens += result.outputTokens || 0;
@@ -2465,24 +2483,47 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
       console.log(`  🔍 AI round ${round + 1}: toolCalls=${result.toolCalls?.length || 0}, text=${(result.text || '').length} chars: "${(result.text || '').substring(0, 80)}"`);
 
       if (!result.toolCalls || result.toolCalls.length === 0) {
-        // Check if AI promised to do something but didn't use tools
-        if (result.text && promiseRetries < 3 && this._detectUnfulfilledPromise(result.text)) {
-          promiseRetries++;
-          console.log(`  ⚠️ AI promised action but no tool call — forcing follow-up with tool_choice:any (retry ${promiseRetries})`);
-          // Add the broken promise as context and force execution
+        // Parse text-based tool calls (some models like MiniMax emit [TOOL_CALL] in text instead of native tool_use)
+        const parsedTools = this._parseTextToolCalls(result.text);
+        if (parsedTools.length > 0) {
+          console.log(`  🔧 Parsed ${parsedTools.length} text-based tool call(s): ${parsedTools.map(t => t.name).join(', ')}`);
+          const toolResults = [];
+          for (const tc of parsedTools) {
+            const output = await this._executeSingleTool(tc.name, tc.input, imagePath);
+            toolResults.push({ id: tc.id, result: output });
+          }
+          // Rewrite result to look like a native tool call for history
+          result.toolCalls = parsedTools;
+          result.text = result.text.replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/g, '').trim();
+          this._addToolRoundToHistory(chatId, result, toolResults);
+          incompleteRetries = 0;
+          continue;
+        }
+
+        // Unified incomplete response detection
+        // hasToolHistory = true if any previous round in this session had tool calls
+        const hasToolHistory = round > 0;
+        
+        const isIncomplete = result.text && incompleteRetries < 3 ? await this._detectIncompleteResponse(result.text, hasToolHistory, chatId) : false;
+        console.log(`  🔎 Completeness check: hasToolHistory=${hasToolHistory}, incompleteRetries=${incompleteRetries}, isIncomplete=${isIncomplete}`);
+        if (isIncomplete) {
+          incompleteRetries++;
+          console.log(`  ⚠️ Incomplete response detected (retry ${incompleteRetries}/3) — forcing tool use`);
           this._addToolRoundToHistory(chatId, result, []);
           if (this.conversationMgr) {
             this.conversationMgr.addMessage(chatId, 'user',
-              `[System: Kamu bilang "${result.text.substring(0, 100)}..." tapi tidak ada tindakan. JANGAN hanya bilang akan melakukan sesuatu — LANGSUNG gunakan tool yang sesuai SEKARANG. Jika tidak bisa, jelaskan kenapa ke user.]`
+              `[System: Kamu bilang akan melakukan sesuatu tapi tidak ada tool call. JANGAN bilang/describe — LANGSUNG gunakan tool (shell, async_shell, dll) SEKARANG. Jika benar-benar tidak bisa, jelaskan kenapa.]`
             );
           }
-          // Force tool use on next call
-          const forceResult = await this._callAIWithTools(chatId, systemPrompt, tools, currentQuery, { toolChoice: { type: 'any' } });
+          let forceResult;
+          try {
+            forceResult = await this._callAIWithTools(chatId, systemPrompt, tools, currentQuery, { toolChoice: { type: 'any' } });
+          } catch (e) { console.error(`  ❌ Force call failed: ${e.message}`); continue; }
+          if (!forceResult) continue;
           totalTokens += forceResult.tokensUsed || 0;
           totalInputTokens += forceResult.inputTokens || 0;
           totalOutputTokens += forceResult.outputTokens || 0;
           if (forceResult.toolCalls && forceResult.toolCalls.length > 0) {
-            // Tool was forced — execute it
             const toolResults = [];
             for (const tc of forceResult.toolCalls) {
               const output = await this._executeSingleTool(tc.name, tc.input, imagePath);
@@ -2490,17 +2531,45 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
             }
             this._addToolRoundToHistory(chatId, forceResult, toolResults);
             console.log(`  ✅ Forced tool call successful: ${forceResult.toolCalls.map(t => t.name).join(', ')}`);
-            continue; // continue loop for final response
+            // Don't reset incompleteRetries here — forced tool calls don't mean the AI is back on track
+            continue;
           }
-          // Still no tool calls even with force — give up
+          // Check if forced result has text-based tool calls
+          const forceParsed = this._parseTextToolCalls(forceResult.text);
+          if (forceParsed.length > 0) {
+            console.log(`  🔧 Parsed ${forceParsed.length} text-based tool call(s) from forced result: ${forceParsed.map(t => t.name).join(', ')}`);
+            const toolResults = [];
+            for (const tc of forceParsed) {
+              const output = await this._executeSingleTool(tc.name, tc.input, imagePath);
+              toolResults.push({ id: tc.id, result: output });
+            }
+            forceResult.toolCalls = forceParsed;
+            forceResult.text = (forceResult.text || '').replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/g, '').trim();
+            this._addToolRoundToHistory(chatId, forceResult, toolResults);
+            continue;
+          }
           if (forceResult.text) return { responseText: forceResult.text, tokensUsed: totalTokens, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
-          continue; // retry the round
+          continue;
         }
-        // No tool calls = AI is done, return text response
+        // No tool calls and response is complete = AI is done
+        // Final check for text-based tool calls before returning
+        const finalParsed = this._parseTextToolCalls(result.text);
+        if (finalParsed.length > 0) {
+          console.log(`  🔧 Parsed ${finalParsed.length} text-based tool call(s) from final response: ${finalParsed.map(t => t.name).join(', ')}`);
+          const toolResults = [];
+          for (const tc of finalParsed) {
+            const output = await this._executeSingleTool(tc.name, tc.input, imagePath);
+            toolResults.push({ id: tc.id, result: output });
+          }
+          result.toolCalls = finalParsed;
+          result.text = (result.text || '').replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/g, '').trim();
+          this._addToolRoundToHistory(chatId, result, toolResults);
+          continue;
+        }
         return { responseText: result.text, tokensUsed: totalTokens, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
       }
 
-      promiseRetries = 0; // reset on successful tool use
+      incompleteRetries = 0; // reset on successful tool use
 
       // Execute each tool call
       const toolResults = [];
@@ -2549,8 +2618,13 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
     if (this.conversationMgr) {
       this.conversationMgr.addMessage(chatId, 'user', `[System: Max tool rounds (${maxRounds}) reached. Berikan ringkasan progress sejauh ini ke user, apa yang sudah selesai, apa yang belum, dan tanya user mau lanjut yang mana atau ada instruksi lain.]`);
     }
-    const final = await this._callAIWithTools(chatId, systemPrompt, tools, currentQuery);
-    return { responseText: final.text, tokensUsed: totalTokens + (final.tokensUsed || 0), inputTokens: totalInputTokens + (final.inputTokens || 0), outputTokens: totalOutputTokens + (final.outputTokens || 0) };
+    let final;
+    try {
+      final = await this._callAIWithTools(chatId, systemPrompt, tools, currentQuery);
+    } catch (e) {
+      return { responseText: `⚠️ Error saat merangkum: ${e.message}`, tokensUsed: totalTokens, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
+    }
+    return { responseText: final?.text || 'Proses selesai.', tokensUsed: totalTokens + (final?.tokensUsed || 0), inputTokens: totalInputTokens + (final?.inputTokens || 0), outputTokens: totalOutputTokens + (final?.outputTokens || 0) };
   }
 
   start() {
@@ -2828,6 +2902,17 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
         this._currentPeerId = String(peerId);
         this._currentChatId = chatId;
 
+        // Detect autonomous mode triggers
+        if (text && /lanjut\s*(terus|sampai|aja)|gas\s*(terus|sampai|semua|aja)|jangan\s*(tanya|konfirmasi)|tanpa\s*konfirmasi|sampai\s*(selesai|bisa|berhasil)|don'?t\s*ask|just\s*do\s*it|keep\s*going/i.test(text)) {
+          this._autonomousChats.add(chatId);
+          console.log(`  🤖 Autonomous mode ENABLED for chat ${chatId}`);
+        }
+        // Detect stop autonomous triggers  
+        if (text && /^(stop|berhenti|pause|tunggu|wait|hold)/i.test(text.trim())) {
+          this._autonomousChats.delete(chatId);
+          console.log(`  🛑 Autonomous mode DISABLED for chat ${chatId}`);
+        }
+
         const systemPrompt = await this._buildSystemPrompt(text || 'image analysis', chatId);
         console.log(`🧠 Processing: "${(text || '[image]').substring(0, 60)}" from ${msg.senderName} (batch: ${batchMessages.length})`);
 
@@ -2857,11 +2942,12 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
         const queryWithReplyHint = replyHint ? `${text || 'image analysis'}${replyHint}` : text || 'image analysis';
         const processPromise = this._processWithTools(chatId, systemPrompt, imagePath, maxRounds, queryWithReplyHint);
         const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Processing timeout (180s)')), 180000)
+          setTimeout(() => reject(new Error('Processing timeout (1800s)')), 1800000)
         );
         const { responseText: rawResponse, tokensUsed, inputTokens: inTok, outputTokens: outTok } = await Promise.race([processPromise, timeoutPromise])
           .catch(err => {
             console.error(`⚠️ Process error: ${err.message}`);
+            console.error(`⚠️ Stack trace: ${err.stack}`);
             return { responseText: `⚠️ Proses timeout atau gagal: ${err.message}. Coba lagi ya!`, tokensUsed: 0, inputTokens: 0, outputTokens: 0 };
           });
 
@@ -2920,6 +3006,19 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
         }
 
         if (responseText) {
+          // Safety net: strip any leaked [TOOL_CALL] blocks before sending to user
+          if (responseText.includes('[TOOL_CALL]')) {
+            console.log(`  ⚠️ Stripping leaked [TOOL_CALL] from response before sending`);
+            responseText = responseText.replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/g, '').trim();
+            if (!responseText) responseText = '✅ Task executed.';
+          }
+          // Response delay (configurable per DM/group)
+          const delayConfig = this.config.response_delay || {};
+          const delaySec = isGroupChat ? (delayConfig.group ?? 5) : (delayConfig.dm ?? 3);
+          if (delaySec > 0) {
+            console.log(`  ⏳ Response delay: ${delaySec}s (${isGroupChat ? 'group' : 'DM'})`);
+            await new Promise(r => setTimeout(r, delaySec * 1000));
+          }
           console.log(`  📨 Sending response (${responseText.length} chars)...`);
           try {
             const MAX_TG_LEN = 4000;

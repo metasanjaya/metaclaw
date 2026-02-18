@@ -1,6 +1,6 @@
 # MetaClaw 🐾
 
-![Version](https://img.shields.io/badge/version-2.3.0-blue)
+![Version](https://img.shields.io/badge/version-2.4.0-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Personal AI assistant running on Telegram via GramJS (MTProto).
@@ -203,10 +203,35 @@ src/ai/
 
 ## Providers
 
-- **Anthropic** — Claude Opus 4.6
+- **Kimi (Moonshot)** — K2.5 (OpenAI-compatible)
+- **Anthropic** — Claude Opus 4.6, Sonnet 4.5
 - **Google** — Gemini Flash/Pro/3
-- **OpenAI** — GPT-5.2
+- **OpenAI** — GPT-5.2, Codex (Responses API)
 - **MiniMax** — M2.5
+- **DeepSeek** — DeepSeek Chat
+- **Grok (xAI)** — Grok-2
+- **Z.AI** — GLM-5
+
+## Configuration
+
+### Per-Model Temperature
+```yaml
+models:
+  simple:
+    provider: kimi
+    model: kimi-k2.5
+    temperature: 1    # Kimi only accepts 1
+```
+
+### Response Delay
+```yaml
+response_delay:
+  dm: 3       # seconds before replying in DM
+  group: 5    # seconds before replying in group
+```
+
+### Config Validation
+Startup validates `config.yaml` against schema (Zod). Invalid configs fail fast with clear error messages.
 
 ## License
 MIT

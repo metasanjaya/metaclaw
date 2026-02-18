@@ -350,7 +350,8 @@ export class InstanceManager extends EventEmitter {
           replyToId: { type: 'string', description: 'Numeric chat/user ID where to send result (e.g. "5020823483"). REQUIRED.' },
           replyToUsername: { type: 'string', description: 'Telegram username without @ (e.g. "MetaSanjaya"). Optional but recommended as fallback.' },
           replyToTopicId: { type: 'number', description: 'Topic/thread ID for forum-style groups. Optional.' },
-          timeout_ms: { type: 'number', description: 'Timeout in milliseconds (default 60000 for tasks)' },
+          timeout_ms: { type: 'number', description: 'Timeout in milliseconds (default 300000/5min for tasks)' },
+          replyBack: { type: 'boolean', description: 'If true (default), the target instance processes silently and returns the result to YOU (the delegator) instead of messaging the human directly. You then report the result. Set to false if you want the target to report directly to the human.' },
         },
       },
     ];
@@ -397,12 +398,21 @@ export class InstanceManager extends EventEmitter {
       }
 
       case 'delegate_task': {
-        const { to, task, context, replyToId, replyToUsername, replyToTopicId, timeout_ms } = input;
+        const { to, task, context, replyToId, replyToUsername, replyToTopicId, timeout_ms, replyBack = true } = input;
         const peer = await this.getPeer(to);
         if (!peer) return `Instance "${to}" is not online.`;
         try {
-          const result = await this.request(to, 'execute_task', { task, context: context || '', replyToId: replyToId || '', replyToUsername: replyToUsername || '', replyToTopicId: replyToTopicId || null }, timeout_ms || 60000);
-          if (result.error) return `Task failed: ${result.error}`;
+          const result = await this.request(to, 'execute_task', { 
+            task, context: context || '', 
+            replyToId: replyToId || '', replyToUsername: replyToUsername || '', 
+            replyToTopicId: replyToTopicId || null,
+            replyBack,  // tell target whether to message human directly or return silently
+          }, timeout_ms || 300000);
+          if (result.error) return `Task delegation failed: ${result.error}`;
+          const resultText = typeof result === 'string' ? result : (result.result || JSON.stringify(result, null, 2));
+          if (replyBack) {
+            return `[TASK COMPLETED by ${peer.name || to}]\n${resultText}\n\n→ You should now report this result to the user yourself.`;
+          }
           return typeof result === 'string' ? result : JSON.stringify(result, null, 2);
         } catch (err) {
           return `Task delegation failed: ${err.message}`;

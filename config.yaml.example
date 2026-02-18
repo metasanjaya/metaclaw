@@ -13,40 +13,48 @@ gramjs:
 models:
   # Simple tasks (casual chat, quick answers)
   simple:
-    provider: openai
-    model: gpt-5.2
-    reasoning: medium
+    provider: kimi
+    model: kimi-k2.5
+    reasoning: high
+    temperature: 1
 
   # Complex tasks (analysis, debugging, multi-step)
   complex:
-    provider: anthropic
-    model: claude-opus-4-6
+    provider: kimi
+    model: kimi-k2.5
+    reasoning: high
+    temperature: 1
 
   # Intent classification & vision
   intent:
     provider: google
     model: gemini-2.5-flash
+    temperature: 0
   vision:
     provider: google
     model: gemini-2.5-flash
+    temperature: 0
 
   # Fallback when primary fails
   fallback:
     provider: google
     model: gemini-3
+    temperature: 0.7
+
+# Response delay (seconds before sending reply)
+response_delay:
+  dm: 3       # delay for DM messages
+  group: 5    # delay for group messages
 
 # Sub-Agent Models
-# Planning phase (generates step-by-step plan)
 subagent:
   planner:
     provider: openai
     model: gpt-5.2
     reasoning: high
-
-  # Execution phase (executes each step with tools)
   executor:
-    provider: minimax
-    model: MiniMax-M2.5
+    provider: kimi
+    model: kimi-k2.5
 
 # Access Control
 access_control:
@@ -67,6 +75,16 @@ workspace:
 # Features
 features:
   streaming: false  # placeholder + edit response mode
+
+# Remote LLM Providers (API keys)
+# llm:
+#   remote:
+#     providers:
+#       kimi:
+#         api_key: sk-your-kimi-key
+#       minimax:
+#         api_key: sk-your-minimax-key
+#         base_url: https://api.minimax.io/anthropic
 
 # Multi-instance communication (optional)
 # instance:

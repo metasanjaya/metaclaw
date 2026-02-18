@@ -112,6 +112,13 @@ If a simple answer suffices, give it without elaboration.`;
       console.log('✅ Z.AI initialized');
     }
 
+    // Kimi (Moonshot) - OpenAI-compatible
+    const kimiKey = remoteProviders.kimi?.api_key || process.env.KIMI_API_KEY;
+    if (kimiKey) {
+      this.providers.kimi = new OpenAICompatibleProvider('kimi', { apiKey: kimiKey });
+      console.log('✅ Kimi (Moonshot) initialized');
+    }
+
     // MiniMax - Anthropic-compatible
     const minimaxKey = remoteProviders.minimax?.api_key || process.env.MINIMAX_API_KEY;
     if (minimaxKey) {
