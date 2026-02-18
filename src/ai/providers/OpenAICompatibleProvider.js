@@ -8,6 +8,7 @@ const PROVIDER_CONFIGS = {
   grok: { baseURL: 'https://api.x.ai/v1', envKey: 'GROK_API_KEY', defaultModel: 'grok-2' },
   deepseek: { baseURL: 'https://api.deepseek.com/v1', envKey: 'DEEPSEEK_API_KEY', defaultModel: 'deepseek-chat' },
   zai: { baseURL: 'https://api.z.ai/api/paas/v4', envKey: 'ZAI_API_KEY', defaultModel: 'glm-5' },
+  kimi: { baseURL: 'https://api.moonshot.ai/v1', envKey: 'KIMI_API_KEY', defaultModel: 'kimi-k2.5' },
 };
 
 export class OpenAICompatibleProvider extends BaseProvider {
@@ -25,13 +26,15 @@ export class OpenAICompatibleProvider extends BaseProvider {
   }
 
   async chat(messages, options = {}) {
-    const { model = this.defaultModel, maxTokens = 1000, temperature = 0.7 } = options;
+    let { model = this.defaultModel, maxTokens = 1000, temperature = 0.7 } = options;
+    if (this.name === 'kimi') temperature = 1;
     const completion = await this.client.chat.completions.create({ model, messages, max_tokens: maxTokens, temperature });
     return this._normalize(completion.choices[0].message.content, completion.usage?.total_tokens || 0, model);
   }
 
   async chatWithTools(messages, tools, options = {}) {
-    const { model = this.defaultModel, maxTokens = 1000, temperature = 0.7 } = options;
+    let { model = this.defaultModel, maxTokens = 1000, temperature = 0.7 } = options;
+    if (this.name === 'kimi') temperature = 1;
 
     const openaiTools = tools.map(t => ({
       type: 'function',

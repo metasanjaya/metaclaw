@@ -23,13 +23,13 @@ const MAX_MESSAGES_PER_CHAT = 80;
 const SAVE_DEBOUNCE_MS = 5000;
 
 // How many recent messages to ALWAYS include (immediate context)
-const RECENT_WINDOW = 20;
+const RECENT_WINDOW = 30;
 // How many relevant older messages to include via embeddings
 const RELEVANT_OLDER = 10;
 // When to auto-compact
-const COMPACT_THRESHOLD = 50;
+const COMPACT_THRESHOLD = 120;
 // How many recent to keep after compaction
-const COMPACT_KEEP_RECENT = 20;
+const COMPACT_KEEP_RECENT = 40;
 
 const GREETING_PATTERNS = /^(hi|hello|hey|halo|hai|yo|sup|gm|gn|good\s*(morning|night|evening|afternoon))[\s!.]*$/i;
 const FILLER_PATTERNS = /^(ok|okay|yes|no|ya|yep|nope|sure|thanks|thx|ty|lol|haha|nice|cool|hmm|wow|oke|sip|gak|ga|iya|nah|udah|done|got it)[\s!.]*$/i;

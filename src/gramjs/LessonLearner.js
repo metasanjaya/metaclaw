@@ -167,8 +167,11 @@ export class LessonLearner {
         { provider: intentCfg.provider, model: intentCfg.model, maxTokens: 60, temperature: 0 }
       );
 
-      const lesson = (result?.text || result?.content || String(result)).trim();
-      if (!lesson || lesson.length < 5) return;
+      let lesson = (result?.text || result?.content || '').trim();
+      if (!lesson || lesson === '[object Object]' || lesson.length < 10 || lesson.length > 150) return;
+      // Remove markdown artifacts and incomplete sentences
+      lesson = lesson.replace(/^[`#*\-]+\s*/, '').replace(/[`*]+$/, '').trim();
+      if (!lesson || lesson.length < 10) return;
 
       const entry = {
         id: `l_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,

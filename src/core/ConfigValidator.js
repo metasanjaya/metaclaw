@@ -6,7 +6,7 @@
 import { z } from 'zod';
 
 const ModelSchema = z.object({
-  provider: z.enum(['anthropic', 'openai', 'google', 'ollama', 'minimax']),
+  provider: z.string().min(1),
   model: z.string().min(1),
   maxTokens: z.number().positive().optional(),
   reasoning: z.enum(['low', 'medium', 'high']).optional(),
