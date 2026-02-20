@@ -82,65 +82,65 @@ If a simple answer suffices, give it without elaboration.`;
     const remoteProviders = this.config.remote?.providers || {};
 
     // OpenAI
-    const openaiKey = remoteProviders.openai?.api_key || this.config.apiKey || process.env.OPENAI_API_KEY;
+    const openaiKey = remoteProviders.openai?.apiKey || remoteProviders.openai?.api_key || this.config.apiKey || process.env.OPENAI_API_KEY;
     if (openaiKey) {
       this.providers.openai = new OpenAIProvider({ apiKey: openaiKey });
       console.log('✅ OpenAI initialized');
     }
 
     // Anthropic
-    const anthropicKey = remoteProviders.anthropic?.api_key || process.env.ANTHROPIC_API_KEY;
+    const anthropicKey = remoteProviders.anthropic?.apiKey || remoteProviders.anthropic?.api_key || process.env.ANTHROPIC_API_KEY;
     if (anthropicKey) {
       this.providers.anthropic = new AnthropicProvider({ apiKey: anthropicKey, debug: this.config.debug });
       console.log('✅ Anthropic (Claude) initialized');
     }
 
     // Google Gemini
-    const googleKey = remoteProviders.google?.api_key || process.env.GOOGLE_API_KEY;
+    const googleKey = remoteProviders.google?.apiKey || remoteProviders.google?.api_key || process.env.GOOGLE_API_KEY;
     if (googleKey) {
       this.providers.google = new GoogleProvider({ apiKey: googleKey });
       console.log('✅ Google (Gemini) initialized');
     }
 
     // Grok (xAI) - OpenAI-compatible
-    const grokKey = remoteProviders.grok?.api_key || process.env.GROK_API_KEY;
+    const grokKey = remoteProviders.grok?.apiKey || remoteProviders.grok?.api_key || process.env.GROK_API_KEY;
     if (grokKey) {
       this.providers.grok = new OpenAICompatibleProvider('grok', { apiKey: grokKey });
       console.log('✅ Grok (xAI) initialized');
     }
 
     // DeepSeek - OpenAI-compatible
-    const deepseekKey = remoteProviders.deepseek?.api_key || process.env.DEEPSEEK_API_KEY;
+    const deepseekKey = remoteProviders.deepseek?.apiKey || remoteProviders.deepseek?.api_key || process.env.DEEPSEEK_API_KEY;
     if (deepseekKey) {
       this.providers.deepseek = new OpenAICompatibleProvider('deepseek', { apiKey: deepseekKey });
       console.log('✅ DeepSeek initialized');
     }
 
     // Z.AI - OpenAI-compatible
-    const zaiKey = remoteProviders.zai?.api_key || process.env.ZAI_API_KEY;
+    const zaiKey = remoteProviders.zai?.apiKey || remoteProviders.zai?.api_key || process.env.ZAI_API_KEY;
     if (zaiKey) {
       this.providers.zai = new OpenAICompatibleProvider('zai', { apiKey: zaiKey });
       console.log('✅ Z.AI initialized');
     }
 
     // Kimi (Moonshot) - Native fetch provider (OpenAI SDK has init issues)
-    const kimiKey = remoteProviders.kimi?.api_key || process.env.KIMI_API_KEY;
-    console.log('[UnifiedAIClient] Kimi key:', kimiKey ? `${kimiKey.slice(0, 10)}...${kimiKey.slice(-4)}` : 'MISSING');
+    // Support both camelCase (apiKey) and snake_case (api_key) for backward compatibility
+    const kimiKey = remoteProviders.kimi?.apiKey || remoteProviders.kimi?.api_key || process.env.KIMI_API_KEY;
     if (kimiKey) {
       this.providers.kimi = new KimiProvider({
         apiKey: kimiKey,
-        baseURL: remoteProviders.kimi?.base_url || 'https://api.moonshot.ai/v1',
+        baseURL: remoteProviders.kimi?.baseURL || remoteProviders.kimi?.base_url || 'https://api.moonshot.ai/v1',
         defaultModel: remoteProviders.kimi?.model || 'kimi-k2.5',
       });
       console.log('✅ Kimi (Moonshot) initialized');
     }
 
     // MiniMax - Anthropic-compatible
-    const minimaxKey = remoteProviders.minimax?.api_key || process.env.MINIMAX_API_KEY;
+    const minimaxKey = remoteProviders.minimax?.apiKey || remoteProviders.minimax?.api_key || process.env.MINIMAX_API_KEY;
     if (minimaxKey) {
       this.providers.minimax = new MiniMaxProvider({
         apiKey: minimaxKey,
-        baseURL: remoteProviders.minimax?.base_url || remoteProviders.minimax?.baseURL
+        baseURL: remoteProviders.minimax?.baseURL || remoteProviders.minimax?.base_url
       });
       console.log('✅ MiniMax initialized');
     }
