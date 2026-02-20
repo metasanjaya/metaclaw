@@ -27,7 +27,7 @@ export class OpenAICompatibleProvider extends BaseProvider {
 
   async chat(messages, options = {}) {
     let { model = this.defaultModel, maxTokens = 1000, temperature = 0.7 } = options;
-    if (this.name === 'kimi') temperature = 1;
+    if (this.name === 'kimi') temperature = 0.6;
     const completion = await this.client.chat.completions.create({ model, messages, max_tokens: maxTokens, temperature });
     return this._normalize(completion.choices[0].message.content, completion.usage?.total_tokens || 0, model);
   }
@@ -83,7 +83,8 @@ export class OpenAICompatibleProvider extends BaseProvider {
     }
     // Kimi: disable thinking when using tools (incompatible)
     if (this.name === 'kimi') {
-      createOpts.extra_body = { thinking: { type: 'disabled' } };
+      createOpts.thinking = { type: 'disabled' };
+      console.log(`[Kimi] createOpts.thinking:`, JSON.stringify(createOpts.thinking));
     }
     // Kimi: ALL assistant messages need reasoning_content when thinking is enabled (avoid 400 error)
     if (this.name === 'kimi') {
