@@ -416,6 +416,36 @@ export class MCServer {
       }).catch(() => this._json(res, {}));
     });
 
+    // Scheduler CRUD
+    this.app.get('/api/instances/:instanceId/schedules', (res, req) => {
+      res.onAborted(() => {});
+      const inst = this.instanceManager.get(req.getParameter(0));
+      this._json(res, inst?.scheduler?.listAll() || []);
+    });
+
+    this.app.post('/api/instances/:instanceId/schedules', (res, req) => {
+      res.onAborted(() => {});
+      const instanceId = req.getParameter(0);
+      this._readBody(res, (body) => {
+        const inst = this.instanceManager.get(instanceId);
+        if (!inst?.scheduler) { this._json(res, { error: 'no scheduler' }, 404); return; }
+        try {
+          const data = JSON.parse(body);
+          const id = inst.scheduler.add(data);
+          this._json(res, { id });
+        } catch (e) { this._json(res, { error: e.message }, 400); }
+      });
+    });
+
+    this.app.del('/api/instances/:instanceId/schedules/:jobId', (res, req) => {
+      res.onAborted(() => {});
+      const inst = this.instanceManager.get(req.getParameter(0));
+      const jobId = req.getParameter(1);
+      if (!inst?.scheduler) { this._json(res, { error: 'not found' }, 404); return; }
+      const ok = inst.scheduler.remove(jobId);
+      this._json(res, { ok });
+    });
+
     this.app.get('/api/chat/:instanceId/history', (res, req) => {
       res.onAborted(() => {});
       const instanceId = req.getParameter(0);
