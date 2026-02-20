@@ -1,3 +1,5 @@
+import { ChatStore } from './ChatStore.js';
+
 /**
  * Represents a single MetaClaw instance (independent agent).
  */
@@ -26,8 +28,8 @@ export class Instance {
     /** @type {string[]} — enabled skill IDs */
     this.skillIds = config.skills || [];
 
-    /** @type {Map<string, Array<{role:string, content:string}>>} chatId → messages */
-    this.conversations = new Map();
+    /** @type {ChatStore|null} */
+    this.chatStore = null;
 
     /** @type {{inputTokens:number, outputTokens:number, cost:number, requests:number}} */
     this.stats = { inputTokens: 0, outputTokens: 0, cost: 0, requests: 0 };
@@ -44,6 +46,15 @@ export class Instance {
   async start() {
     this.status = 'initializing';
     this.eventBus.emit('instance.spawn', { id: this.id, name: this.name });
+    // Init persistent chat store
+    if (this.dataDir) {
+      try {
+        this.chatStore = new ChatStore(this.dataDir);
+        console.log(`[Instance:${this.id}] Chat store initialized`);
+      } catch (e) {
+        console.error(`[Instance:${this.id}] Chat store error:`, e.message);
+      }
+    }
     this.status = 'running';
     console.log(`[Instance:${this.id}] ${this.emoji} ${this.name} is running (model: ${this.model})`);
   }
@@ -70,18 +81,15 @@ export class Instance {
   }
 
   /**
-   * Get or create conversation history for a chat
+   * Get conversation history from persistent store
    * @param {string} chatId
    * @returns {Array<{role:string, content:string}>}
    */
   _getConversation(chatId) {
-    if (!this.conversations.has(chatId)) {
-      this.conversations.set(chatId, []);
+    if (this.chatStore) {
+      return this.chatStore.getConversation(chatId, 50);
     }
-    const conv = this.conversations.get(chatId);
-    // Keep last 50 messages to avoid token overflow
-    if (conv.length > 50) conv.splice(0, conv.length - 50);
-    return conv;
+    return [];
   }
 
   /**
@@ -101,10 +109,14 @@ export class Instance {
     }
 
     const chatId = msg.chatId;
-    const conversation = this._getConversation(chatId);
 
-    // Add user message
-    conversation.push({ role: 'user', content: msg.text });
+    // Persist user message
+    if (this.chatStore) {
+      this.chatStore.save({ id: msg.id, chatId, role: 'user', text: msg.text, senderId: msg.senderId, timestamp: msg.timestamp });
+    }
+
+    // Load conversation from store
+    const conversation = this._getConversation(chatId);
 
     try {
       // Build messages array with system prompt
@@ -131,8 +143,10 @@ export class Instance {
       }
       this.stats.requests++;
 
-      // Add assistant response to conversation
-      conversation.push({ role: 'assistant', content: text });
+      // Persist assistant response
+      if (this.chatStore) {
+        this.chatStore.save({ id: crypto.randomUUID(), chatId, role: 'assistant', text, timestamp: Date.now() });
+      }
 
       // Emit for tracking
       this.eventBus.emit('instance.response', {
