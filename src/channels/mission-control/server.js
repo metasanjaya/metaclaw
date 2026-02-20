@@ -137,6 +137,99 @@ export class MCServer {
       }
     });
 
+    // --- Settings APIs ---
+    this.app.get('/api/config', (res) => {
+      res.onAborted(() => {});
+      this._json(res, {
+        global: {
+          model: this.instanceManager.configManager.global.model || {},
+          missionControl: this.instanceManager.configManager.global.missionControl || {},
+          mesh: this.instanceManager.configManager.global.mesh || {},
+        },
+      });
+    });
+
+    this.app.post('/api/config', (res) => {
+      res.onAborted(() => {});
+      this._readBody(res, async (body) => {
+        try {
+          const data = JSON.parse(body);
+          const yaml = (await import('js-yaml')).default;
+          const { writeFileSync } = await import('node:fs');
+          const { join } = await import('node:path');
+          const cfgPath = join(this.instanceManager.configManager.baseDir, 'config.yaml');
+          const current = this.instanceManager.configManager.global;
+          if (data.model?.primary) current.model = { ...current.model, primary: data.model.primary };
+          if (data.missionControl?.port) current.missionControl = { ...current.missionControl, port: data.missionControl.port };
+          writeFileSync(cfgPath, yaml.dump(current));
+          this._json(res, { ok: true });
+        } catch (e) {
+          res.cork(() => { res.writeStatus('400'); this._json(res, { error: e.message }); });
+        }
+      });
+    });
+
+    this.app.get('/api/instances/:id/config', (res, req) => {
+      res.onAborted(() => {});
+      const id = req.getParameter(0);
+      const config = this.instanceManager.configManager.getInstance(id);
+      if (!config) { res.cork(() => { res.writeStatus('404'); this._json(res, { error: 'Not found' }); }); return; }
+      this._json(res, {
+        id,
+        model: config.model || {},
+        identity: config._identity || {},
+        channels: config.channels || [],
+        skills: config.skills || [],
+        telegram: config.telegram ? { enabled: config.telegram.enabled !== false, whitelist: config.telegram.whitelist || [] } : null,
+      });
+    });
+
+    this.app.post('/api/instances/:id/config', (res, req) => {
+      res.onAborted(() => {});
+      const id = req.getParameter(0);
+      this._readBody(res, async (body) => {
+        try {
+          const data = JSON.parse(body);
+          const yaml = (await import('js-yaml')).default;
+          const { writeFileSync, readFileSync, existsSync } = await import('node:fs');
+          const { join } = await import('node:path');
+          const dir = join(this.instanceManager.configManager.baseDir, 'instances', id);
+          if (!existsSync(dir)) throw new Error('Instance not found');
+
+          // Update config.yaml
+          const cfgPath = join(dir, 'config.yaml');
+          const cfg = yaml.load(readFileSync(cfgPath, 'utf8')) || {};
+          if (data.model?.primary) cfg.model = { ...cfg.model, primary: data.model.primary };
+          if (data.skills) cfg.skills = data.skills;
+          writeFileSync(cfgPath, yaml.dump(cfg));
+
+          // Update identity.yaml
+          const idPath = join(dir, 'identity.yaml');
+          const ident = yaml.load(readFileSync(idPath, 'utf8')) || {};
+          if (data.identity?.name !== undefined) ident.name = data.identity.name;
+          if (data.identity?.personality !== undefined) ident.personality = data.identity.personality;
+          if (data.identity?.emoji !== undefined) ident.emoji = data.identity.emoji;
+          writeFileSync(idPath, yaml.dump(ident));
+
+          // Reload config
+          this.instanceManager.configManager.load();
+
+          // Update running instance
+          const inst = this.instanceManager.get(id);
+          if (inst) {
+            if (data.model?.primary) inst.model = data.model.primary;
+            if (data.identity?.name) inst.name = data.identity.name;
+            if (data.identity?.emoji) inst.emoji = data.identity.emoji;
+            if (data.identity?.personality) inst.personality = data.identity.personality;
+          }
+
+          this._json(res, { ok: true, instances: this.instanceManager.list() });
+        } catch (e) {
+          res.cork(() => { res.writeStatus('400'); this._json(res, { error: e.message }); });
+        }
+      });
+    });
+
     this.app.get('/api/tasks', (res) => {
       res.onAborted(() => {});
       // TODO: wire to actual task system
@@ -344,6 +437,14 @@ export class MCServer {
 
   _send(ws, data) {
     try { ws.send(JSON.stringify(data)); } catch {}
+  }
+
+  _readBody(res, cb) {
+    let body = '';
+    res.onData((chunk, isLast) => {
+      body += Buffer.from(chunk).toString();
+      if (isLast) cb(body);
+    });
   }
 
   _json(res, data) {
