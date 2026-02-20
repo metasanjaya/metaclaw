@@ -68,6 +68,13 @@ If a simple answer suffices, give it without elaboration.`;
    */
   setDebugLogger(logger) {
     this.debugLogger = logger;
+    // Propagate to all providers that support it
+    for (const [name, provider] of Object.entries(this.providers)) {
+      if (provider?.setDebugLogger) {
+        provider.setDebugLogger(logger);
+        console.log(`[UnifiedAIClient] Debug logger set for ${name}`);
+      }
+    }
   }
 
   /** @private */
@@ -131,6 +138,7 @@ If a simple answer suffices, give it without elaboration.`;
         apiKey: kimiKey,
         baseURL: remoteProviders.kimi?.baseURL || remoteProviders.kimi?.base_url || 'https://api.moonshot.ai/v1',
         defaultModel: remoteProviders.kimi?.model || 'kimi-k2.5',
+        debugLogger: this.debugLogger,
       });
       console.log('✅ Kimi (Moonshot) initialized');
     }
