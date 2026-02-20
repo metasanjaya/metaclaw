@@ -62,8 +62,14 @@ export class MCServer {
     this.app.get('/api/chat/:instanceId/history', (res, req) => {
       res.onAborted(() => {});
       const instanceId = req.getParameter(0);
-      const history = this.chatHistory.get(instanceId) || [];
-      this._json(res, history.slice(-100));
+      const instance = this.instanceManager.get(instanceId);
+      if (instance?.chatStore) {
+        const history = instance.chatStore.getHistory(instanceId, 100);
+        this._json(res, history);
+      } else {
+        const history = this.chatHistory.get(instanceId) || [];
+        this._json(res, history.slice(-100));
+      }
     });
 
     // --- WebSocket ---
@@ -130,16 +136,21 @@ export class MCServer {
         break;
 
       case 'join_chat': {
-        // Client joins a chat room for an instance
         const { instanceId } = msg;
         if (!instanceId) return;
         ws._data.chatId = instanceId;
         if (!this.chatClients.has(instanceId)) this.chatClients.set(instanceId, new Set());
         this.chatClients.get(instanceId).add(ws);
 
-        // Send history
-        const history = this.chatHistory.get(instanceId) || [];
-        this._send(ws, { type: 'chat_history', instanceId, messages: history.slice(-100) });
+        // Send history from SQLite or memory
+        const instance = this.instanceManager.get(instanceId);
+        let history;
+        if (instance?.chatStore) {
+          history = instance.chatStore.getHistory(instanceId, 100);
+        } else {
+          history = (this.chatHistory.get(instanceId) || []).slice(-100);
+        }
+        this._send(ws, { type: 'chat_history', instanceId, messages: history });
         break;
       }
 
