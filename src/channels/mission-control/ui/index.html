@@ -554,21 +554,38 @@
                 <input x-model="instConfig.skillsStr" type="text" class="modal-input" placeholder="shell, web_search">
                 <div style="font-size:10px;color:var(--text2);margin-top:2px;">Comma-separated skill names</div>
               </div>
+              <!-- Channels -->
               <div>
-                <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Channels</label>
-                <div style="font-size:12px;color:var(--text2);padding:4px 0;">
-                  <template x-for="ch in instConfig.channels || []" :key="ch">
-                    <span style="display:inline-block;padding:2px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;margin:2px;font-size:11px;" x-text="ch"></span>
+                <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">📡 Channels</label>
+                <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;">
+                  <template x-for="ch in availableChannels" :key="ch.id">
+                    <label style="display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:11px;transition:all 0.15s;" :style="instConfig.enabledChannels?.includes(ch.id) ? 'border-color:var(--accent);background:rgba(59,130,246,0.1)' : ''">
+                      <input type="checkbox" :checked="instConfig.enabledChannels?.includes(ch.id)" @change="toggleChannel(ch.id)" style="accent-color:var(--accent);">
+                      <span x-text="ch.icon + ' ' + ch.label"></span>
+                    </label>
                   </template>
                 </div>
+                <div x-show="instConfig.hasTelegram" style="padding:8px 10px;background:var(--bg);border-radius:6px;border:1px solid var(--border);font-size:11px;">
+                  <span style="color:var(--green);">●</span> Telegram connected
+                  <span style="color:var(--text2);margin-left:8px;">Whitelist: <span x-text="instConfig.telegramWhitelist?.join(', ') || 'none'"></span></span>
+                </div>
               </div>
-              <div x-show="instConfig.hasTelegram" style="padding:10px;background:var(--bg);border-radius:8px;border:1px solid var(--border);">
-                <div style="font-size:11px;color:var(--text2);margin-bottom:4px;">📱 Telegram</div>
-                <div style="font-size:11px;color:var(--green);">● Connected</div>
+
+              <!-- SOUL.md -->
+              <div>
+                <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">🧬 SOUL.md <span style="color:var(--text2);font-weight:normal;">(deep personality & identity)</span></label>
+                <textarea x-model="instConfig.soul" rows="6" class="modal-input" style="resize:vertical;font-size:12px;line-height:1.6;" placeholder="Define the core personality, values, communication style...&#10;&#10;Example:&#10;You're warm and curious. You love explaining things simply.&#10;You speak casually but accurately."></textarea>
               </div>
+
+              <!-- MY_RULES.md -->
+              <div>
+                <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">📏 MY_RULES.md <span style="color:var(--text2);font-weight:normal;">(behavioral rules & constraints)</span></label>
+                <textarea x-model="instConfig.rules" rows="4" class="modal-input" style="resize:vertical;font-size:12px;line-height:1.6;" placeholder="Rules the instance must follow...&#10;&#10;Example:&#10;- Always respond in Bahasa Indonesia&#10;- Never share personal data&#10;- Keep responses under 200 words"></textarea>
+              </div>
+
               <div style="display:flex;justify-content:flex-end;gap:8px;">
                 <button @click="selectInst(selectedInst)" class="modal-btn-cancel">Reset</button>
-                <button @click="saveInst()" class="modal-btn-primary" :disabled="instSaving" x-text="instSaving ? 'Saving...' : 'Save Changes'"></button>
+                <button @click="saveInst()" class="modal-btn-primary" :disabled="instSaving" x-text="instSaving ? 'Saving...' : 'Save All'"></button>
               </div>
               <div x-show="instMsg" style="font-size:12px;padding:6px 10px;border-radius:6px;" :style="instMsg?.includes('Error') ? 'color:var(--red);background:rgba(239,68,68,0.1)' : 'color:var(--green);background:rgba(34,197,94,0.1)'" x-text="instMsg"></div>
             </div>
@@ -680,6 +697,10 @@ function settingsPage() {
     globalSaving: false, globalMsg: '',
     selectedInst: null, instConfig: null,
     instSaving: false, instMsg: '',
+    availableChannels: [
+      { id: 'mission-control', label: 'Mission Control', icon: '🌐' },
+      { id: 'telegram', label: 'Telegram', icon: '📱' },
+    ],
 
     async load() {
       try {
@@ -688,7 +709,6 @@ function settingsPage() {
         this.globalConfig.model = d.global?.model?.primary || 'anthropic/claude-sonnet-4-6';
         this.globalConfig.port = d.global?.missionControl?.port || 3100;
       } catch {}
-      // Auto-select first instance
       const insts = this.$data?.instances || this.instances;
       if (insts?.length > 0) this.selectInst(insts[0].id);
     },
@@ -697,8 +717,16 @@ function settingsPage() {
       this.selectedInst = id;
       this.instMsg = '';
       try {
-        const r = await fetch(`/api/instances/${id}/config`);
-        const d = await r.json();
+        const [cfgRes, filesRes] = await Promise.all([
+          fetch(`/api/instances/${id}/config`),
+          fetch(`/api/instances/${id}/files`),
+        ]);
+        const d = await cfgRes.json();
+        const f = await filesRes.json();
+        const enabledChannels = [...(d.channels || [])];
+        if (d.telegram) enabledChannels.push('telegram');
+        // Dedupe
+        const unique = [...new Set(enabledChannels.map(c => c.replace(/^telegram-.*/, 'telegram')))];
         this.instConfig = {
           name: d.identity?.name || id,
           emoji: d.identity?.emoji || '🤖',
@@ -706,9 +734,20 @@ function settingsPage() {
           personality: d.identity?.personality || '',
           skillsStr: (d.skills || []).join(', '),
           channels: d.channels || [],
+          enabledChannels: unique,
           hasTelegram: !!d.telegram,
+          telegramWhitelist: d.telegram?.whitelist || [],
+          soul: f.soul || '',
+          rules: f.rules || '',
         };
       } catch {}
+    },
+
+    toggleChannel(chId) {
+      if (!this.instConfig.enabledChannels) this.instConfig.enabledChannels = [];
+      const idx = this.instConfig.enabledChannels.indexOf(chId);
+      if (idx >= 0) this.instConfig.enabledChannels.splice(idx, 1);
+      else this.instConfig.enabledChannels.push(chId);
     },
 
     async saveGlobal() {
@@ -735,27 +774,44 @@ function settingsPage() {
       this.instSaving = true; this.instMsg = '';
       try {
         const skills = this.instConfig.skillsStr.split(',').map(s => s.trim()).filter(Boolean);
-        const r = await fetch(`/api/instances/${this.selectedInst}/config`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        const headers = { 'Content-Type': 'application/json' };
+
+        // Save config + identity
+        const r1 = await fetch(`/api/instances/${this.selectedInst}/config`, {
+          method: 'POST', headers,
           body: JSON.stringify({
             model: { primary: this.instConfig.model },
-            identity: {
-              name: this.instConfig.name,
-              emoji: this.instConfig.emoji,
-              personality: this.instConfig.personality,
-            },
+            identity: { name: this.instConfig.name, emoji: this.instConfig.emoji, personality: this.instConfig.personality },
             skills,
           }),
         });
-        const d = await r.json();
-        if (!r.ok) throw new Error(d.error);
-        // Update parent instances list
-        if (d.instances) {
+        const d1 = await r1.json();
+        if (!r1.ok) throw new Error(d1.error);
+
+        // Save SOUL.md + MY_RULES.md
+        const r2 = await fetch(`/api/instances/${this.selectedInst}/files`, {
+          method: 'POST', headers,
+          body: JSON.stringify({ soul: this.instConfig.soul, rules: this.instConfig.rules }),
+        });
+        const d2 = await r2.json();
+        if (!r2.ok) throw new Error(d2.error);
+
+        // Save channels
+        const channels = this.instConfig.enabledChannels.filter(c => c !== 'telegram');
+        const hasTg = this.instConfig.enabledChannels.includes('telegram');
+        const r3 = await fetch(`/api/instances/${this.selectedInst}/channels`, {
+          method: 'POST', headers,
+          body: JSON.stringify({ channels, telegram: hasTg ? { enabled: true } : false }),
+        });
+        const d3 = await r3.json();
+        if (!r3.ok) throw new Error(d3.error);
+
+        // Update parent
+        if (d1.instances) {
           const app = Alpine.closestDataStack(this.$el)?.[0];
-          if (app?.instances) app.instances = d.instances;
+          if (app?.instances) app.instances = d1.instances;
         }
-        this.instMsg = '✅ Saved! Restart instance to apply model change.';
+        this.instMsg = '✅ All saved! Restart instance to apply changes.';
       } catch (e) {
         this.instMsg = 'Error: ' + e.message;
       } finally { this.instSaving = false; }

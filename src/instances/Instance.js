@@ -1,4 +1,9 @@
 import { ChatStore } from './ChatStore.js';
+import { readFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+
+const require_fs = { readFileSync, existsSync };
+const require_path = { join };
 
 /**
  * Represents a single MetaClaw instance (independent agent).
@@ -82,8 +87,20 @@ export class Instance {
    * @returns {string}
    */
   _buildSystemPrompt() {
+    const { readFileSync, existsSync } = require_fs;
     const parts = [`You are ${this.name}.`];
     if (this.personality) parts.push(this.personality);
+    // Load SOUL.md and MY_RULES.md if they exist
+    try {
+      const dir = this.config._dir;
+      if (dir) {
+        const { join } = require_path;
+        const soulPath = join(dir, 'SOUL.md');
+        if (existsSync(soulPath)) parts.push('\n\n' + readFileSync(soulPath, 'utf8').trim());
+        const rulesPath = join(dir, 'MY_RULES.md');
+        if (existsSync(rulesPath)) parts.push('\n\n## Rules\n' + readFileSync(rulesPath, 'utf8').trim());
+      }
+    } catch {}
     parts.push('Be helpful, concise, and friendly. Respond in the same language as the user.');
     return parts.join(' ');
   }
