@@ -7,10 +7,12 @@ export class InstanceManager {
   /**
    * @param {import('../core/ConfigManager.js').ConfigManager} configManager
    * @param {import('../core/EventBus.js').EventBus} eventBus
+   * @param {import('../core/Router.js').Router} [router]
    */
-  constructor(configManager, eventBus) {
+  constructor(configManager, eventBus, router) {
     this.configManager = configManager;
     this.eventBus = eventBus;
+    this.router = router || null;
     /** @type {Map<string, Instance>} */
     this.instances = new Map();
   }
@@ -22,7 +24,7 @@ export class InstanceManager {
     for (const id of this.configManager.getInstanceIds()) {
       const config = this.configManager.getInstance(id);
       if (!config) continue;
-      const instance = new Instance({ id, config, eventBus: this.eventBus });
+      const instance = new Instance({ id, config, eventBus: this.eventBus, router: this.router });
       this.instances.set(id, instance);
     }
     console.log(`[InstanceManager] Loaded ${this.instances.size} instance(s)`);

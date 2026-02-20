@@ -25,7 +25,7 @@ export class Engine {
     this.router = new Router({ eventBus: this.eventBus });
     this.channelManager = new ChannelManager(this.eventBus);
     this.skillRegistry = new SkillRegistry(this.eventBus);
-    this.instanceManager = new InstanceManager(this.config, this.eventBus);
+    this.instanceManager = new InstanceManager(this.config, this.eventBus, this.router);
     this.doctor = null;
     this.mesh = null;
     this._running = false;
@@ -105,17 +105,31 @@ export class Engine {
   }
 
   /**
-   * Route inbound message to the correct instance
+   * Route inbound message to the correct instance and send response
    * @param {import('./types.js').InboundMessage} msg
    */
-  _routeMessage(msg) {
-    for (const [, instance] of this.instanceManager.instances) {
-      if (instance.channelIds.includes(msg.channelId)) {
-        instance.handleMessage(msg);
+  async _routeMessage(msg) {
+    // For Mission Control: chatId = instanceId
+    const instance = this.instanceManager.get(msg.chatId);
+    if (instance) {
+      const response = await instance.handleMessage(msg);
+      if (response) {
+        this.channelManager.sendText(msg.channelId, msg.chatId, response);
+      }
+      return;
+    }
+
+    // Fallback: route by channel assignment
+    for (const [, inst] of this.instanceManager.instances) {
+      if (inst.channelIds.includes(msg.channelId)) {
+        const response = await inst.handleMessage(msg);
+        if (response) {
+          this.channelManager.sendText(msg.channelId, msg.chatId, response);
+        }
         return;
       }
     }
-    console.warn(`[Engine] No instance handles channel: ${msg.channelId}`);
+    console.warn(`[Engine] No instance handles message for: ${msg.chatId}`);
   }
 
   /**

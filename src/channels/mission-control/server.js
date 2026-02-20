@@ -50,6 +50,15 @@ export class MCServer {
       this._json(res, health);
     });
 
+    this.app.get('/api/stats', (res) => {
+      res.onAborted(() => {});
+      const stats = {};
+      for (const [id, inst] of this.instanceManager.instances) {
+        stats[id] = inst.getStats();
+      }
+      this._json(res, stats);
+    });
+
     this.app.get('/api/chat/:instanceId/history', (res, req) => {
       res.onAborted(() => {});
       const instanceId = req.getParameter(0);
@@ -241,11 +250,9 @@ export class MCServer {
     res.onAborted(() => {});
     let url = req.getUrl();
 
-    // SPA routing: known pages → their HTML files
-    const pages = { '/': '/index.html', '/chat': '/chat.html', '/health': '/health.html', '/settings': '/settings.html' };
-    if (pages[url]) url = pages[url];
-    // Chat with instance: /chat/:id → chat.html
-    if (url.match(/^\/chat\/[^/]+$/)) url = '/chat.html';
+    // SPA: all pages route to index.html
+    const spaRoutes = ['/', '/chat', '/health', '/settings'];
+    if (spaRoutes.includes(url) || url.match(/^\/chat\/[^/]+$/)) url = '/index.html';
 
     if (url.includes('..')) { res.writeStatus('403').end(); return; }
 
