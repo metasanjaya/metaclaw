@@ -4,124 +4,126 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MetaClaw Chat</title>
-<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="/css/style.css">
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<script>
-tailwind.config = {
-  darkMode: 'class',
-  theme: { extend: { colors: { mc: { bg: '#0f172a', card: '#1e293b', border: '#334155', accent: '#3b82f6', green: '#22c55e' } } } }
-}
-</script>
-<style>
-  body { background: #0f172a; }
-  .scrollbar-thin::-webkit-scrollbar { width: 4px; }
-  .scrollbar-thin::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
-  .chat-bubble pre { background: #0f172a; padding: 8px; border-radius: 6px; overflow-x: auto; margin: 4px 0; }
-  .chat-bubble code { font-size: 12px; }
-  .chat-bubble p { margin: 4px 0; }
-  .typing-dots span { animation: blink 1.4s infinite; }
-  .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
-  .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
-  @keyframes blink { 0%,60%,100%{opacity:0.3} 30%{opacity:1} }
-</style>
 </head>
-<body class="dark text-gray-200 h-screen flex flex-col" x-data="chatApp()" x-init="init()">
+<body x-data="chatApp()" x-init="init()">
 
 <!-- Top Bar -->
-<header class="bg-mc-card border-b border-mc-border px-6 py-3 flex items-center justify-between shrink-0">
-  <div class="flex items-center gap-4">
-    <a href="/" class="text-gray-400 hover:text-white">← Dashboard</a>
-    <div class="flex items-center gap-2">
-      <span class="text-xl" x-text="currentInstance?.emoji || '🤖'"></span>
-      <span class="font-medium" x-text="currentInstance?.name || 'Select instance'"></span>
-      <span class="text-xs px-2 py-0.5 rounded-full bg-mc-green/20 text-mc-green"
-            x-show="currentInstance?.status === 'running'">running</span>
+<div class="topbar">
+  <div class="topbar-left">
+    <div class="logo">⚡ METACLAW <span>MISSION CONTROL</span></div>
+    <div class="status-pill" :class="connected ? 'status-online' : 'status-offline'" x-text="connected ? '● Online' : '● Offline'"></div>
+  </div>
+  <div class="topbar-stats">
+    <div class="topbar-stat">
+      <div class="value" x-text="currentInstance?.emoji || '🤖'" style="font-size:28px;"></div>
+      <div class="label" x-text="currentInstance?.name || 'Select'"></div>
     </div>
   </div>
-  <div class="flex items-center gap-2">
-    <template x-for="inst in instances" :key="inst.id">
-      <button class="text-xs px-3 py-1 rounded-full border transition"
-              :class="inst.id === instanceId ? 'border-mc-accent bg-mc-accent/20 text-mc-accent' : 'border-mc-border text-gray-400 hover:text-white'"
-              @click="switchInstance(inst.id)"
-              x-text="inst.emoji + ' ' + inst.name"></button>
-    </template>
-  </div>
-</header>
-
-<!-- Chat Area -->
-<div class="flex-1 overflow-y-auto p-6 space-y-4 scrollbar-thin" id="chat-scroll" x-ref="chatScroll">
-  <template x-for="msg in messages" :key="msg.id">
-    <div class="flex" :class="msg.role === 'user' ? 'justify-end' : 'justify-start'">
-      <div class="max-w-2xl rounded-lg px-4 py-2 chat-bubble"
-           :class="msg.role === 'user' ? 'bg-mc-accent/20 text-gray-200' : 'bg-mc-card border border-mc-border'">
-        <div class="text-xs text-gray-500 mb-1" x-text="msg.role === 'user' ? 'You' : (currentInstance?.name || 'Assistant')"></div>
-        <div x-html="renderMd(msg.text)"></div>
-        <div class="text-[10px] text-gray-600 mt-1" x-text="new Date(msg.timestamp).toLocaleTimeString()"></div>
-      </div>
-    </div>
-  </template>
-
-  <!-- Typing indicator -->
-  <div x-show="typing" class="flex justify-start">
-    <div class="bg-mc-card border border-mc-border rounded-lg px-4 py-2">
-      <div class="typing-dots text-gray-400">
-        <span>●</span><span>●</span><span>●</span>
-      </div>
-    </div>
+  <div class="topbar-right">
+    <div><div class="clock" x-text="clock">00:00:00</div><div class="clock-date" x-text="clockDate">---</div></div>
   </div>
 </div>
 
-<!-- Input -->
-<div class="bg-mc-card border-t border-mc-border p-4 shrink-0">
-  <form @submit.prevent="send()" class="flex gap-3 max-w-4xl mx-auto">
-    <input type="text" x-model="input" placeholder="Type a message..."
-           class="flex-1 bg-mc-bg border border-mc-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-mc-accent"
-           :disabled="!instanceId" autofocus>
-    <button type="submit"
-            class="bg-mc-accent hover:bg-mc-accent/80 text-white px-6 py-2.5 rounded-lg text-sm font-medium disabled:opacity-50"
-            :disabled="!input.trim() || !instanceId">
-      Send
-    </button>
-  </form>
+<!-- Nav -->
+<div class="nav">
+  <a href="/">Dashboard</a>
+  <a href="/chat" class="active">Chat</a>
+  <a href="/health">Health</a>
+  <a href="/settings">Settings</a>
+</div>
+
+<!-- Chat Layout -->
+<div class="chat-layout">
+
+  <!-- Instance Switcher -->
+  <div class="chat-header">
+    <a href="/" style="color:var(--text2);text-decoration:none;font-size:12px;">← Back</a>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+      <template x-for="inst in instances" :key="inst.id">
+        <button class="instance-pill" :class="inst.id === instanceId ? 'active' : ''" @click="switchInstance(inst.id)" x-text="inst.emoji + ' ' + inst.name"></button>
+      </template>
+    </div>
+    <div style="margin-left:auto;font-size:10px;color:var(--text2);">
+      <span x-text="messages.length + ' messages'"></span>
+      <span x-show="currentInstance" x-text="' · ' + (currentInstance?.status || '')"></span>
+    </div>
+  </div>
+
+  <!-- Messages -->
+  <div class="chat-messages" x-ref="chatScroll">
+    <template x-for="msg in messages" :key="msg.id">
+      <div class="msg-bubble" :class="msg.role">
+        <div class="msg-content" x-html="renderMd(msg.text)"></div>
+        <div class="msg-meta">
+          <span x-text="msg.role === 'user' ? 'You' : (currentInstance?.name || 'Assistant')"></span>
+          · <span x-text="new Date(msg.timestamp).toLocaleTimeString('en-US', {hour12:false, hour:'2-digit', minute:'2-digit'})"></span>
+        </div>
+      </div>
+    </template>
+
+    <!-- Typing -->
+    <div x-show="typing" class="msg-bubble assistant">
+      <div class="msg-content">
+        <div class="typing-indicator"><span></span><span></span><span></span></div>
+      </div>
+    </div>
+
+    <div x-show="messages.length === 0 && !typing" style="text-align:center;padding:60px 20px;color:var(--text2);">
+      <div style="font-size:48px;margin-bottom:12px;" x-text="currentInstance?.emoji || '🤖'"></div>
+      <div style="font-size:14px;" x-text="currentInstance ? 'Start chatting with ' + currentInstance.name : 'Select an instance to chat'"></div>
+    </div>
+  </div>
+
+  <!-- Input -->
+  <div class="chat-input-area">
+    <form @submit.prevent="send()">
+      <input type="text" x-model="input" placeholder="Type a message..." :disabled="!instanceId" autofocus>
+      <button type="submit" :disabled="!input.trim() || !instanceId">Send</button>
+    </form>
+  </div>
 </div>
 
 <script>
 function chatApp() {
   return {
-    ws: null,
-    instances: [],
-    instanceId: null,
-    currentInstance: null,
-    messages: [],
-    input: '',
-    typing: false,
+    ws: null, connected: false,
+    instances: [], instanceId: null, currentInstance: null,
+    messages: [], input: '', typing: false,
+    clock: '', clockDate: '',
 
     init() {
-      // Get instanceId from URL: /chat/:id
       const parts = location.pathname.split('/');
       if (parts.length >= 3 && parts[2]) this.instanceId = parts[2];
-
+      this.updateClock();
+      setInterval(() => this.updateClock(), 1000);
       this.connectWs();
+    },
+
+    updateClock() {
+      const now = new Date();
+      this.clock = now.toLocaleTimeString('en-US', { hour12: false });
+      const days = ['SUN','MON','TUE','WED','THU','FRI','SAT'];
+      const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+      this.clockDate = `${days[now.getDay()]}, ${months[now.getMonth()]} ${now.getDate()} ${now.getFullYear()}`;
     },
 
     connectWs() {
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       this.ws = new WebSocket(`${proto}//${location.host}/ws`);
       this.ws.onopen = () => {
-        if (this.instanceId) {
-          this.ws.send(JSON.stringify({ type: 'join_chat', instanceId: this.instanceId }));
-        }
+        this.connected = true;
+        if (this.instanceId) this.ws.send(JSON.stringify({ type: 'join_chat', instanceId: this.instanceId }));
       };
-      this.ws.onclose = () => setTimeout(() => this.connectWs(), 3000);
+      this.ws.onclose = () => { this.connected = false; setTimeout(() => this.connectWs(), 3000); };
       this.ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
         if (msg.type === 'welcome') {
           this.instances = msg.instances || [];
           this.currentInstance = this.instances.find(i => i.id === this.instanceId);
-          if (!this.instanceId && this.instances.length > 0) {
-            this.switchInstance(this.instances[0].id);
-          }
+          if (!this.instanceId && this.instances.length > 0) this.switchInstance(this.instances[0].id);
         } else if (msg.type === 'chat_history') {
           this.messages = msg.messages || [];
           this.$nextTick(() => this.scrollDown());
@@ -134,9 +136,7 @@ function chatApp() {
     },
 
     switchInstance(id) {
-      if (this.instanceId) {
-        this.ws?.send(JSON.stringify({ type: 'leave_chat' }));
-      }
+      if (this.instanceId) this.ws?.send(JSON.stringify({ type: 'leave_chat' }));
       this.instanceId = id;
       this.currentInstance = this.instances.find(i => i.id === id);
       this.messages = [];
@@ -159,7 +159,7 @@ function chatApp() {
     scrollDown() {
       const el = this.$refs.chatScroll;
       if (el) el.scrollTop = el.scrollHeight;
-    }
+    },
   };
 }
 </script>

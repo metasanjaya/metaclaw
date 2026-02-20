@@ -4,131 +4,318 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MetaClaw Mission Control</title>
-<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="/css/style.css">
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-<script>
-tailwind.config = {
-  darkMode: 'class',
-  theme: {
-    extend: {
-      colors: {
-        mc: { bg: '#0f172a', card: '#1e293b', border: '#334155', accent: '#3b82f6', green: '#22c55e', red: '#ef4444', yellow: '#eab308' }
-      }
-    }
-  }
-}
-</script>
-<style>
-  body { background: #0f172a; }
-  .scrollbar-thin::-webkit-scrollbar { width: 4px; }
-  .scrollbar-thin::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
-</style>
 </head>
-<body class="dark text-gray-200 min-h-screen" x-data="dashboard()" x-init="init()">
+<body x-data="mc()" x-init="init()">
 
 <!-- Top Bar -->
-<header class="bg-mc-card border-b border-mc-border px-6 py-3 flex items-center justify-between">
-  <div class="flex items-center gap-4">
-    <h1 class="text-lg font-bold">⚡ MetaClaw <span class="text-mc-accent">Mission Control</span></h1>
-    <span class="text-xs px-2 py-0.5 rounded-full" :class="connected ? 'bg-mc-green/20 text-mc-green' : 'bg-mc-red/20 text-mc-red'">
-      <span x-text="connected ? '● Online' : '● Offline'"></span>
-    </span>
+<div class="topbar">
+  <div class="topbar-left">
+    <div class="logo">⚡ METACLAW <span>MISSION CONTROL</span></div>
+    <div class="status-pill" :class="connected ? 'status-online' : 'status-offline'" x-text="connected ? '● Online' : '● Offline'"></div>
   </div>
-  <div class="flex items-center gap-6 text-sm">
-    <div class="text-center"><div class="text-lg font-bold" x-text="instances.length">0</div><div class="text-gray-500 text-xs">Instances</div></div>
-    <div class="text-center"><div class="text-lg font-bold text-mc-green" x-text="instances.filter(i=>i.status==='running').length">0</div><div class="text-gray-500 text-xs">Running</div></div>
-    <div class="text-gray-500" x-text="clock"></div>
+  <div class="topbar-stats">
+    <div class="topbar-stat"><div class="value" x-text="instances.length">0</div><div class="label">Agents Active</div></div>
+    <div class="topbar-stat"><div class="value" x-text="tasks.queue.length + tasks.inProgress.length">0</div><div class="label">Tasks in Queue</div></div>
+    <div class="topbar-stat"><div class="value" x-text="'$' + stats.costToday.toFixed(2)">$0.00</div><div class="label">Cost Today</div></div>
+    <div class="topbar-stat"><div class="value" x-text="formatNum(stats.tokensToday)">0</div><div class="label">Tokens Today</div></div>
   </div>
-</header>
+  <div class="topbar-right">
+    <div><div class="clock" x-text="clock">00:00:00</div><div class="clock-date" x-text="clockDate">---</div></div>
+  </div>
+</div>
 
 <!-- Nav -->
-<nav class="bg-mc-card/50 border-b border-mc-border px-6 py-2 flex gap-4 text-sm">
-  <a href="/" class="text-mc-accent font-medium">Dashboard</a>
-  <a href="/chat" class="text-gray-400 hover:text-white">Chat</a>
-  <a href="/health" class="text-gray-400 hover:text-white">Health</a>
-  <a href="/settings" class="text-gray-400 hover:text-white">Settings</a>
-</nav>
+<div class="nav">
+  <a href="/" class="active">Dashboard</a>
+  <a href="/chat">Chat</a>
+  <a href="/health">Health</a>
+  <a href="/settings">Settings</a>
+</div>
 
-<main class="p-6 max-w-7xl mx-auto">
+<!-- Main Layout -->
+<div class="layout">
 
-  <!-- Instance Grid -->
-  <h2 class="text-sm font-medium text-gray-400 mb-3">INSTANCES</h2>
-  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
-    <template x-for="inst in instances" :key="inst.id">
-      <div class="bg-mc-card rounded-lg border border-mc-border p-4 hover:border-mc-accent/50 transition cursor-pointer"
-           @click="window.location.href='/chat/'+inst.id">
-        <div class="flex items-center justify-between mb-3">
-          <div class="flex items-center gap-2">
-            <span class="text-xl" x-text="inst.emoji"></span>
-            <span class="font-medium" x-text="inst.name"></span>
+  <!-- LEFT: Instances -->
+  <div class="panel-left">
+    <div class="panel-header">
+      <div class="panel-title">Instances</div>
+      <div class="badge" x-text="instances.length">0</div>
+    </div>
+    <template x-for="(inst, i) in instances" :key="inst.id">
+      <div class="agent-card" :class="i === 0 ? 'active' : ''" @click="window.location.href='/chat/'+inst.id">
+        <div class="agent-top">
+          <div class="agent-avatar" :style="'background:' + avatarColors[i % avatarColors.length]" x-text="inst.emoji || inst.name[0]"></div>
+          <div>
+            <div class="agent-name" x-text="inst.name"></div>
+            <div class="agent-role" x-text="inst.model?.split('/').pop() || ''"></div>
           </div>
-          <span class="text-xs px-2 py-0.5 rounded-full"
-                :class="inst.status==='running' ? 'bg-mc-green/20 text-mc-green' : 'bg-gray-600/20 text-gray-400'"
-                x-text="inst.status"></span>
         </div>
-        <div class="text-xs text-gray-500 space-y-1">
-          <div>Model: <span class="text-gray-300" x-text="inst.model"></span></div>
-          <div>Channels: <span class="text-gray-300" x-text="inst.channels?.join(', ') || 'none'"></span></div>
+        <div class="agent-status">
+          <div class="dot" :class="inst.status === 'running' ? 'dot-green' : inst.status === 'stopped' ? 'dot-red' : 'dot-yellow'"></div>
+          <span x-text="inst.status"></span>
+        </div>
+        <div class="agent-metrics">
+          <div class="agent-metric">Channels: <span x-text="inst.channels?.length || 0"></span></div>
         </div>
       </div>
     </template>
-    <div x-show="instances.length === 0" class="col-span-full text-center text-gray-500 py-8">
-      No instances found. Run <code class="bg-mc-card px-2 py-1 rounded">metaclaw init &lt;name&gt;</code>
+    <div class="add-instance" @click="window.location.href='/settings'">+ Add Instance</div>
+
+    <div class="panel-header" style="margin-top:8px;">
+      <div class="panel-title">System</div>
+    </div>
+    <div style="padding:12px 16px;">
+      <div class="config-row"><span class="config-key">WebSocket</span><span class="config-val" :style="'color:' + (connected ? 'var(--green)' : 'var(--red)')" x-text="connected ? '● Connected' : '● Disconnected'"></span></div>
+      <div class="config-row"><span class="config-key">Instances</span><span class="config-val" x-text="instances.length + ' loaded'"></span></div>
+      <div class="config-row"><span class="config-key">Doctor</span><span class="config-val" style="color:var(--green)">● Active</span></div>
+      <div class="config-row"><span class="config-key">Uptime</span><span class="config-val" x-text="uptime"></span></div>
     </div>
   </div>
 
-  <!-- Events Feed -->
-  <h2 class="text-sm font-medium text-gray-400 mb-3">LIVE EVENTS</h2>
-  <div class="bg-mc-card rounded-lg border border-mc-border p-4 max-h-64 overflow-y-auto scrollbar-thin">
-    <template x-for="(evt, i) in events.slice().reverse()" :key="i">
-      <div class="text-xs py-1 border-b border-mc-border/50 flex gap-3">
-        <span class="text-gray-500 w-20 shrink-0" x-text="new Date(evt.time).toLocaleTimeString()"></span>
-        <span class="text-gray-400" x-text="evt.event"></span>
-        <span class="text-gray-300 truncate" x-text="JSON.stringify(evt.data)"></span>
+  <!-- CENTER: Dashboard -->
+  <div class="panel-center">
+
+    <!-- Token Usage & Cost -->
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title"><span class="icon">📊</span> Token Usage (Today)</div>
+        <template x-for="(item, i) in stats.tokenBreakdown" :key="item.model">
+          <div>
+            <div class="token-row"><span class="token-model" x-text="item.model"></span><span class="token-value" x-text="formatNum(item.tokens)"></span></div>
+            <div class="token-bar"><div class="token-fill" :style="'width:' + item.pct + '%;background:' + tokenColors[i % tokenColors.length]"></div></div>
+          </div>
+        </template>
+        <div x-show="stats.tokenBreakdown.length === 0" style="font-size:12px;color:var(--text2);">No token data yet</div>
+        <div style="margin-top:8px;display:flex;justify-content:space-between;font-size:12px;" x-show="stats.dailyBudget > 0">
+          <span class="token-model">Daily Budget</span>
+          <span class="token-value" x-text="formatNum(stats.tokensToday) + ' / ' + formatNum(stats.dailyBudget) + ' (' + Math.round(stats.tokensToday/stats.dailyBudget*100) + '%)'"></span>
+        </div>
       </div>
-    </template>
-    <div x-show="events.length === 0" class="text-gray-500 text-xs">Waiting for events...</div>
+
+      <div class="card">
+        <div class="card-title"><span class="icon">💰</span> Cost (7-Day Trend)</div>
+        <div class="chart-placeholder">
+          <template x-for="(day, i) in stats.costWeekly" :key="i">
+            <div class="chart-bar" :style="'height:' + (day.pct || 5) + '%'" :title="'$' + day.cost.toFixed(2)"></div>
+          </template>
+        </div>
+        <div class="chart-labels">
+          <template x-for="day in stats.costWeekly" :key="day.label">
+            <span x-text="day.label"></span>
+          </template>
+        </div>
+        <div style="margin-top:12px;display:flex;justify-content:space-between;font-size:12px;">
+          <span class="token-model">Today</span><span class="token-value" x-text="'$' + stats.costToday.toFixed(2)"></span>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:12px;margin-top:4px;">
+          <span class="token-model">This Week</span><span class="token-value" x-text="'$' + stats.costWeekTotal.toFixed(2)"></span>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:12px;margin-top:4px;">
+          <span class="token-model">Monthly Est.</span><span class="token-value" x-text="'$' + (stats.costWeekTotal / 7 * 30).toFixed(2)"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Task Board -->
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-title"><span class="icon">📋</span> Task Board</div>
+      <div class="task-columns">
+        <div class="task-col">
+          <div class="task-col-header"><div class="dot dot-yellow" style="width:6px;height:6px;"></div> Queue <span class="task-col-count" x-text="tasks.queue.length">0</span></div>
+          <template x-for="t in tasks.queue" :key="t.id">
+            <div class="task-item">
+              <div class="task-priority" :class="'priority-' + (t.priority || 'medium')" x-text="(t.priority || 'MED').toUpperCase()"></div>
+              <div class="task-item-title" x-text="t.title"></div>
+              <div class="task-item-agent" x-text="'→ ' + (t.agent || 'Unassigned')"></div>
+            </div>
+          </template>
+        </div>
+        <div class="task-col">
+          <div class="task-col-header"><div class="dot dot-green" style="width:6px;height:6px;"></div> In Progress <span class="task-col-count" x-text="tasks.inProgress.length">0</span></div>
+          <template x-for="t in tasks.inProgress" :key="t.id">
+            <div class="task-item">
+              <div class="task-priority" :class="'priority-' + (t.priority || 'medium')" x-text="(t.priority || 'MED').toUpperCase()"></div>
+              <div class="task-item-title" x-text="t.title"></div>
+              <div class="task-item-agent" x-text="'→ ' + (t.agent || '') + ' · ' + (t.time || '')"></div>
+            </div>
+          </template>
+        </div>
+        <div class="task-col">
+          <div class="task-col-header">✓ Done Today <span class="task-col-count" x-text="tasks.done.length">0</span></div>
+          <template x-for="t in tasks.done" :key="t.id">
+            <div class="task-item" style="opacity:0.6;">
+              <div class="task-item-title" x-text="'✅ ' + t.title"></div>
+              <div class="task-item-agent" x-text="(t.agent || '') + ' · ' + (t.time || '')"></div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- Active Conversations & Memory -->
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title"><span class="icon">💬</span> Active Conversations</div>
+        <template x-for="conv in conversations" :key="conv.id">
+          <div class="conv-item" @click="window.location.href='/chat/' + conv.instanceId">
+            <div class="conv-avatar" x-text="conv.name[0]"></div>
+            <div class="conv-info">
+              <div class="conv-name" x-text="conv.name"></div>
+              <div class="conv-preview" x-text="conv.preview"></div>
+            </div>
+            <div>
+              <div class="conv-time" x-text="conv.time"></div>
+              <div class="conv-badge" x-show="conv.unread" x-text="conv.unread"></div>
+            </div>
+          </div>
+        </template>
+        <div x-show="conversations.length === 0" style="font-size:12px;color:var(--text2);padding:8px 0;">No active conversations</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="icon">🧠</span> Memory & Knowledge</div>
+        <div class="knowledge-stat"><span>RAG Documents</span><span class="kv" x-text="knowledge.ragDocs">0</span></div>
+        <div class="knowledge-stat"><span>Memory Entries</span><span class="kv" x-text="knowledge.memoryEntries">0</span></div>
+        <div class="knowledge-stat"><span>Last Sync</span><span class="kv" x-text="knowledge.lastSync">-</span></div>
+        <div style="margin-top:8px;font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:1px;">Recent Learnings</div>
+        <template x-for="l in knowledge.learnings" :key="l.id">
+          <div class="learning-item">
+            <div class="learning-agent" x-text="l.agent + ' · ' + l.time"></div>
+            <div class="learning-text" x-text="l.text"></div>
+          </div>
+        </template>
+      </div>
+    </div>
+
   </div>
 
-</main>
+  <!-- RIGHT: Live Feed -->
+  <div class="panel-right">
+    <div class="panel-header">
+      <div class="panel-title">Live Feed</div>
+      <div class="badge" style="background:var(--green);">Live</div>
+    </div>
+    <div class="tabs">
+      <template x-for="tab in feedTabs" :key="tab">
+        <div class="tab" :class="feedTab === tab ? 'active' : ''" @click="feedTab = tab" x-text="tab"></div>
+      </template>
+    </div>
+    <div style="overflow-y:auto;flex:1;">
+      <template x-for="(evt, i) in filteredFeed" :key="i">
+        <div class="feed-item">
+          <div class="feed-top">
+            <div class="feed-dot" :style="'background:' + (evt.color || 'var(--accent)')" x-text="evt.initial"></div>
+            <div class="feed-agent" x-text="evt.agent"></div>
+            <div class="feed-time" x-text="evt.time"></div>
+          </div>
+          <div class="feed-text" x-html="evt.text"></div>
+        </div>
+      </template>
+      <div x-show="feed.length === 0" style="padding:16px;color:var(--text2);font-size:12px;">Waiting for events...</div>
+    </div>
+  </div>
+
+</div>
 
 <script>
-function dashboard() {
+function mc() {
   return {
     connected: false,
-    instances: [],
-    events: [],
-    clock: '',
     ws: null,
+    clock: '', clockDate: '',
+    instances: [],
+    stats: {
+      costToday: 0, tokensToday: 0, dailyBudget: 5000000,
+      tokenBreakdown: [],
+      costWeekly: [], costWeekTotal: 0,
+    },
+    tasks: { queue: [], inProgress: [], done: [] },
+    conversations: [],
+    knowledge: { ragDocs: 0, memoryEntries: 0, lastSync: '-', learnings: [] },
+    feed: [],
+    feedTab: 'All',
+    feedTabs: ['All', 'Tasks', 'Errors', 'Comms'],
+    uptime: '0m',
+    startTime: Date.now(),
+    avatarColors: [
+      'linear-gradient(135deg, #a855f7, #6366f1)',
+      'linear-gradient(135deg, #06b6d4, #3b82f6)',
+      'linear-gradient(135deg, #f97316, #ef4444)',
+      'linear-gradient(135deg, #22c55e, #06b6d4)',
+    ],
+    tokenColors: ['var(--accent)', 'var(--purple)', 'var(--cyan)', 'var(--green)', 'var(--orange)'],
+
+    get filteredFeed() {
+      if (this.feedTab === 'All') return this.feed;
+      return this.feed.filter(e => e.category === this.feedTab.toLowerCase());
+    },
 
     init() {
+      this.updateClock();
+      setInterval(() => this.updateClock(), 1000);
+      setInterval(() => this.updateUptime(), 60000);
       this.connectWs();
-      setInterval(() => { this.clock = new Date().toLocaleTimeString(); }, 1000);
-      this.clock = new Date().toLocaleTimeString();
+    },
+
+    updateClock() {
+      const now = new Date();
+      this.clock = now.toLocaleTimeString('en-US', { hour12: false });
+      const days = ['SUN','MON','TUE','WED','THU','FRI','SAT'];
+      const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+      this.clockDate = `${days[now.getDay()]}, ${months[now.getMonth()]} ${now.getDate()} ${now.getFullYear()}`;
+    },
+
+    updateUptime() {
+      const mins = Math.floor((Date.now() - this.startTime) / 60000);
+      if (mins < 60) this.uptime = mins + 'm';
+      else this.uptime = Math.floor(mins/60) + 'h ' + (mins%60) + 'm';
     },
 
     connectWs() {
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       this.ws = new WebSocket(`${proto}//${location.host}/ws`);
       this.ws.onopen = () => { this.connected = true; };
-      this.ws.onclose = () => {
-        this.connected = false;
-        setTimeout(() => this.connectWs(), 3000);
-      };
+      this.ws.onclose = () => { this.connected = false; setTimeout(() => this.connectWs(), 3000); };
       this.ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
-        if (msg.type === 'welcome') {
-          this.instances = msg.instances || [];
-        } else if (msg.type === 'event') {
-          this.events.push({ event: msg.event, data: msg.data, time: Date.now() });
-          if (this.events.length > 100) this.events.splice(0, this.events.length - 100);
-          // Refresh instances on instance events
-          if (msg.event?.startsWith('instance.')) {
-            fetch('/api/instances').then(r=>r.json()).then(d => this.instances = d);
-          }
-        }
+        this.handleMsg(msg);
       };
-    }
+    },
+
+    handleMsg(msg) {
+      if (msg.type === 'welcome') {
+        this.instances = msg.instances || [];
+      } else if (msg.type === 'event') {
+        const evt = msg.data || {};
+        this.addFeedItem({
+          agent: evt.id || evt.instanceId || 'System',
+          initial: (evt.id || 'S')[0].toUpperCase(),
+          text: JSON.stringify(evt).slice(0, 200),
+          time: new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }),
+          color: msg.event?.includes('crash') || msg.event?.includes('error') ? 'var(--red)' :
+                 msg.event?.includes('spawn') ? 'var(--green)' : 'var(--accent)',
+          category: msg.event?.includes('error') || msg.event?.includes('crash') ? 'errors' :
+                    msg.event?.includes('task') ? 'tasks' : 'comms',
+        });
+        if (msg.event?.startsWith('instance.')) {
+          fetch('/api/instances').then(r => r.json()).then(d => this.instances = d).catch(() => {});
+        }
+      }
+    },
+
+    addFeedItem(item) {
+      this.feed.unshift(item);
+      if (this.feed.length > 100) this.feed.pop();
+    },
+
+    formatNum(n) {
+      n = parseInt(n) || 0;
+      if (n >= 1000000) return (n/1000000).toFixed(1) + 'M';
+      if (n >= 1000) return (n/1000).toFixed(0) + 'K';
+      return String(n);
+    },
   };
 }
 </script>
