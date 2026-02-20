@@ -27,6 +27,7 @@ const MODEL_PROVIDER_MAP = {
   'deepseek-': 'deepseek',
   'glm-': 'zai',
   'MiniMax-': 'minimax',
+  'kimi-': 'kimi',
 };
 
 function detectProvider(model) {
