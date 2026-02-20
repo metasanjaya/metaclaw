@@ -98,10 +98,11 @@ export class InstanceManager {
     const instance = this.instances.get(id);
     if (!instance) throw new Error(`Instance not found: ${id}`);
     // Stop if running
-    if (instance.status === 'running') await instance.stop();
+    if (instance.status === 'running') {
+      instance.status = 'stopped'; // prevent Instance.stop() from emitting
+    }
     this.instances.delete(id);
     this.configManager.instances.delete(id);
-    // Move directory to trash instead of deleting
     const { join } = await import('node:path');
     const { existsSync, renameSync, mkdirSync } = await import('node:fs');
     const dir = join(this.configManager.baseDir, 'instances', id);
