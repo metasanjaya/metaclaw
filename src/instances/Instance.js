@@ -596,9 +596,9 @@ export class Instance {
    * @returns {Promise<string|null>} transcription text
    */
   async _transcribeVoice(voicePath) {
-    const apiKey = process.env.GOOGLE_API_KEY;
+    const apiKey = process.env.GOOGLE_API_KEY || this.config.providers?.google?.apiKey;
     if (!apiKey) {
-      console.warn(`[Instance:${this.id}] GOOGLE_API_KEY not set, skipping voice transcription`);
+      console.warn(`[Instance:${this.id}] GOOGLE_API_KEY not set (env GOOGLE_API_KEY or config.providers.google.apiKey), skipping voice transcription`);
       return null;
     }
     try {
@@ -641,9 +641,9 @@ export class Instance {
    * @returns {Promise<string|null>} description
    */
   async _analyzeImage(imagePath, prompt = 'Describe this image') {
-    const apiKey = process.env.GOOGLE_API_KEY;
+    const apiKey = process.env.GOOGLE_API_KEY || this.config.providers?.google?.apiKey;
     if (!apiKey) {
-      console.warn(`[Instance:${this.id}] GOOGLE_API_KEY not set, skipping image analysis`);
+      console.warn(`[Instance:${this.id}] GOOGLE_API_KEY not set (env GOOGLE_API_KEY or config.providers.google.apiKey), skipping image analysis`);
       return null;
     }
     try {
