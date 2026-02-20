@@ -146,10 +146,15 @@ export class AnthropicProvider extends BaseProvider {
         return { name: t.function.name, description: t.function.description, input_schema: t.function.parameters };
       }
       // MetaClaw format: { name, description, params }
+      // params can be full schema {type, properties, required} or just properties object
+      const params = t.params || {};
+      const inputSchema = params.type && params.properties
+        ? params  // already full schema
+        : { type: 'object', properties: params, required: Object.keys(params) };
       return {
         name: t.name,
         description: t.description,
-        input_schema: { type: 'object', properties: t.params, required: Object.keys(t.params) },
+        input_schema: inputSchema,
       };
     });
 
