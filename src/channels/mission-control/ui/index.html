@@ -42,7 +42,7 @@
 
     <!-- ========== DASHBOARD ========== -->
     <template x-if="page==='dashboard'">
-      <div class="dashboard-layout" x-data="dashboardPage()" x-init="startPolling()">
+      <div class="dashboard-layout">
         <!-- Left: Instances -->
         <div class="panel-left">
           <div class="panel-header">
@@ -585,29 +585,7 @@
 
 <script>
 function dashboardPage() {
-  return {
-    sysHealth: {},
-    _timer: null,
-    async fetchHealth() {
-      try {
-        const r = await fetch('/api/doctor');
-        this.sysHealth = await r.json();
-      } catch {}
-    },
-    startPolling() {
-      this.fetchHealth();
-      this._timer = setInterval(() => this.fetchHealth(), 10000);
-    },
-    destroy() { if (this._timer) clearInterval(this._timer); },
-    fmtUptime(s) {
-      if (!s) return '0s';
-      if (s < 60) return s + 's';
-      if (s < 3600) return Math.floor(s/60) + 'm';
-      const h = Math.floor(s/3600);
-      if (h < 24) return h + 'h ' + Math.floor((s%3600)/60) + 'm';
-      return Math.floor(h/24) + 'd ' + (h%24) + 'h';
-    },
-  };
+  return {};
 }
 
 function healthPage() {
@@ -655,7 +633,7 @@ function app() {
     })(),
     connected: false, ws: null,
     instances: [], instanceStats: {},
-    feed: [], feedTab: 'All', tasks: [],
+    feed: [], feedTab: 'All', tasks: [], sysHealth: {},
     // Add Instance
     showAddInstance: false, addInstanceLoading: false, addInstanceError: '',
     newInstance: { name: '', emoji: '🤖', model: 'anthropic/claude-sonnet-4-6', personality: '' },
@@ -698,7 +676,9 @@ function app() {
       window.addEventListener('popstate', () => this._parseUrl());
       this.connectWs();
       this.pollStats();
+      this.pollHealth();
       setInterval(() => this.pollStats(), 15000);
+      setInterval(() => this.pollHealth(), 10000);
     },
 
     _parseUrl() {
@@ -889,6 +869,22 @@ function app() {
       if (confirm('Clear chat display? (History is preserved in database)')) {
         this.chatMessages = [];
       }
+    },
+
+    async pollHealth() {
+      try {
+        const r = await fetch('/api/doctor');
+        this.sysHealth = await r.json();
+      } catch {}
+    },
+
+    fmtUptime(s) {
+      if (!s) return '0s';
+      if (s < 60) return s + 's';
+      if (s < 3600) return Math.floor(s/60) + 'm ' + (s%60) + 's';
+      const h = Math.floor(s/3600);
+      if (h < 24) return h + 'h ' + Math.floor((s%3600)/60) + 'm';
+      return Math.floor(h/24) + 'd ' + (h%24) + 'h';
     },
 
     async pollStats() {
