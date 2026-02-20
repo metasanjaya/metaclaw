@@ -414,14 +414,19 @@ export class Instance {
         }
 
         // Add tool round to working messages (native format)
-        workingMessages.push({
+        const assistantMsg = {
           role: 'assistant',
           content: response.text || null,
           tool_calls: response.toolCalls.map(tc => ({
             id: tc.id,
             function: { name: tc.name, arguments: typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input) },
           })),
-        });
+        };
+        // Kimi requires reasoning_content on all assistant messages
+        if (this.model?.includes('kimi')) {
+          assistantMsg.reasoning_content = response.reasoningContent || '';
+        }
+        workingMessages.push(assistantMsg);
         for (const tr of toolResults) {
           workingMessages.push({ role: 'tool', tool_call_id: tr.id, content: tr.result });
         }
