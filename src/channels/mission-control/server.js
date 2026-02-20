@@ -383,6 +383,39 @@ export class MCServer {
       this._json(res, stats);
     });
 
+    // Cost history (for charts)
+    this.app.get('/api/stats/:instanceId/history', (res, req) => {
+      res.onAborted(() => {});
+      const instanceId = req.getParameter(0);
+      const instance = this.instanceManager.get(instanceId);
+      if (!instance?.statsTracker) {
+        this._json(res, []);
+        return;
+      }
+      const days = 7;
+      this._json(res, instance.statsTracker.getHistory(days));
+    });
+
+    // Formatted stats text
+    this.app.get('/api/stats/:instanceId/formatted', (res, req) => {
+      res.onAborted(() => {});
+      const instanceId = req.getParameter(0);
+      const instance = this.instanceManager.get(instanceId);
+      if (!instance?.statsTracker) {
+        this._json(res, { text: 'No stats available' });
+        return;
+      }
+      this._json(res, { text: instance.statsTracker.getFormattedStats() });
+    });
+
+    // Pricing table
+    this.app.get('/api/stats/pricing', (res) => {
+      res.onAborted(() => {});
+      import('../../instances/StatsTracker.js').then(({ StatsTracker }) => {
+        this._json(res, StatsTracker.getPricing());
+      }).catch(() => this._json(res, {}));
+    });
+
     this.app.get('/api/chat/:instanceId/history', (res, req) => {
       res.onAborted(() => {});
       const instanceId = req.getParameter(0);
