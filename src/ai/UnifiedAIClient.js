@@ -14,6 +14,7 @@ import {
   GoogleProvider,
   OpenAICompatibleProvider,
   MiniMaxProvider,
+  KimiProvider,
 } from './providers/index.js';
 
 // Auto-detect provider from model name
@@ -122,10 +123,14 @@ If a simple answer suffices, give it without elaboration.`;
       console.log('✅ Z.AI initialized');
     }
 
-    // Kimi (Moonshot) - OpenAI-compatible
+    // Kimi (Moonshot) - Native fetch provider (OpenAI SDK has init issues)
     const kimiKey = remoteProviders.kimi?.api_key || process.env.KIMI_API_KEY;
     if (kimiKey) {
-      this.providers.kimi = new OpenAICompatibleProvider('kimi', { apiKey: kimiKey });
+      this.providers.kimi = new KimiProvider({
+        apiKey: kimiKey,
+        baseURL: remoteProviders.kimi?.base_url || 'https://api.moonshot.cn/v1',
+        defaultModel: remoteProviders.kimi?.model || 'kimi-k2.5',
+      });
       console.log('✅ Kimi (Moonshot) initialized');
     }
 
