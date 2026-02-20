@@ -9,7 +9,7 @@ export class KimiProvider extends BaseProvider {
     this.name = 'kimi';
     this.defaultModel = config.defaultModel || 'kimi-k2.5';
     this.apiKey = config.apiKey || process.env.KIMI_API_KEY;
-    this.baseURL = config.baseURL || 'https://api.moonshot.cn/v1';
+    this.baseURL = config.baseURL || 'https://api.moonshot.ai/v1';
     this.temperature = config.temperature ?? 0.6;
     this.reasoning = config.reasoning ?? false;
   }
