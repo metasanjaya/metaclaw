@@ -21,7 +21,7 @@ export class Router {
    */
   async init(aiConfig) {
     try {
-      const { default: UnifiedAIClient } = await import('../ai/UnifiedAIClient.js');
+      const { UnifiedAIClient } = await import('../ai/UnifiedAIClient.js');
       this._client = new UnifiedAIClient(aiConfig);
       console.log('[Router] AI client initialized');
     } catch (e) {

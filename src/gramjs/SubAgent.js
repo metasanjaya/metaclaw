@@ -130,6 +130,8 @@ export class SubAgent {
     this.sendFn = sendFn || (() => {});
     this.asyncTaskManager = asyncTaskManager || null;
     this.config = config || {};
+    /** @type {import('./SubAgentWatchdog.js').SubAgentWatchdog|null} */
+    this.watchdog = null;
 
     /** @type {Map<string, Object>} */
     this.tasks = new Map();
@@ -438,6 +440,11 @@ export class SubAgent {
           tool_call_id: tr.id,
           content: typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result),
         });
+      }
+
+      // Report activity to watchdog
+      if (this.watchdog) {
+        try { this.watchdog.reportActivity(taskId); } catch {}
       }
 
       // Progress reporting
