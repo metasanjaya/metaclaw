@@ -4,6 +4,9 @@ import { KnowledgeManager } from './KnowledgeManager.js';
 import { ToolExecutor } from './ToolExecutor.js';
 import { TopicManager } from './TopicManager.js';
 import { RAGEngine } from './RAGEngine.js';
+import { StatsTracker } from './StatsTracker.js';
+import { AutoMemory } from './AutoMemory.js';
+import { LessonLearner } from './LessonLearner.js';
 import { EmbeddingManager } from '../ai/EmbeddingManager.js';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -49,6 +52,12 @@ export class Instance {
     this.topics = null;
     /** @type {RAGEngine|null} */
     this.rag = null;
+    /** @type {StatsTracker|null} */
+    this.statsTracker = null;
+    /** @type {AutoMemory|null} */
+    this.autoMemory = null;
+    /** @type {LessonLearner|null} */
+    this.lessonLearner = null;
 
     /** @type {{inputTokens:number, outputTokens:number, cost:number, requests:number}} */
     this.stats = { inputTokens: 0, outputTokens: 0, cost: 0, requests: 0, totalMessages: 0 };
@@ -124,6 +133,38 @@ export class Instance {
       } catch (e) { console.error(`[Instance:${this.id}] RAG error:`, e.message); }
     }
 
+    // StatsTracker
+    if (this.dataDir) {
+      try {
+        this.statsTracker = new StatsTracker(this.dataDir, { chatStore: this.chatStore });
+        console.log(`[Instance:${this.id}] StatsTracker initialized ($${this.statsTracker.getCostToday().toFixed(4)} today)`);
+      } catch (e) { console.error(`[Instance:${this.id}] StatsTracker error:`, e.message); }
+    }
+
+    // AutoMemory
+    if (this.dataDir && this.router) {
+      try {
+        const summaryModel = this.config.models?.summary || this.config.models?.intent || 'gemini-2.5-flash';
+        this.autoMemory = new AutoMemory({
+          instanceDir: this.dataDir, router: this.router,
+          instanceId: this.id, summaryModel, chatStore: this.chatStore,
+        });
+        console.log(`[Instance:${this.id}] AutoMemory initialized`);
+      } catch (e) { console.error(`[Instance:${this.id}] AutoMemory error:`, e.message); }
+    }
+
+    // LessonLearner
+    if (this.dataDir && this.router) {
+      try {
+        const extractModel = this.config.models?.intent || 'gemini-2.5-flash';
+        this.lessonLearner = new LessonLearner({
+          instanceDir: this.dataDir, router: this.router,
+          instanceId: this.id, extractModel,
+        });
+        console.log(`[Instance:${this.id}] LessonLearner initialized (${this.lessonLearner.getStats().totalLessons} lessons)`);
+      } catch (e) { console.error(`[Instance:${this.id}] LessonLearner error:`, e.message); }
+    }
+
     // Load stats from DB
     if (this.chatStore) {
       try {
@@ -141,6 +182,9 @@ export class Instance {
    */
   async stop() {
     this.status = 'stopping';
+    if (this.statsTracker) this.statsTracker.flush();
+    if (this.lessonLearner) this.lessonLearner.flush();
+    if (this.autoMemory) this.autoMemory.destroy();
     this.eventBus.emit('instance.stop', { id: this.id });
     this.status = 'stopped';
     console.log(`[Instance:${this.id}] Stopped`);
@@ -219,6 +263,12 @@ export class Instance {
       if (topicHint) parts.push(topicHint);
     }
 
+    // 9. Lessons learned (from corrections/errors)
+    if (this.lessonLearner && userMessage) {
+      const lessonCtx = this.lessonLearner.buildContext(userMessage);
+      if (lessonCtx) parts.push(lessonCtx);
+    }
+
     // Fallback instruction
     parts.push('\nBe helpful, concise, and friendly. Respond in the same language as the user.');
 
@@ -237,6 +287,17 @@ export class Instance {
     return [];
   }
 
+  /** Get last assistant message for a chat (for correction detection) */
+  _getLastAssistantMessage(chatId) {
+    if (!this.chatStore) return '';
+    try {
+      const row = this.chatStore.db.prepare(
+        'SELECT text FROM messages WHERE chat_id = ? AND role = ? ORDER BY timestamp DESC LIMIT 1'
+      ).get(chatId, 'assistant');
+      return row?.text || '';
+    } catch { return ''; }
+  }
+
   /**
    * Handle inbound message (from assigned channel)
    * @param {import('../core/types.js').InboundMessage} msg
@@ -251,6 +312,15 @@ export class Instance {
 
     // Classify topic
     if (this.topics) this.topics.classify(chatId, msg.text, 'user');
+
+    // Track activity for auto-memory
+    if (this.autoMemory) this.autoMemory.trackActivity(chatId, msg.senderName || msg.senderId);
+
+    // Check for corrections (lesson learning)
+    if (this.lessonLearner) {
+      const prevAssistant = this._getLastAssistantMessage(chatId);
+      this.lessonLearner.checkCorrection(msg.text, prevAssistant, chatId).catch(() => {});
+    }
 
     // Persist user message
     if (this.chatStore) {
@@ -282,7 +352,7 @@ export class Instance {
         // No tool calls → final response
         if (!response.toolCalls || response.toolCalls.length === 0) {
           const text = response.text || '';
-          this._trackStats(totalIn, totalOut);
+          this._trackStats(totalIn, totalOut, msg);
           this._persistResponse(chatId, text);
           this._reindexIfNeeded();
           return text;
@@ -311,7 +381,7 @@ export class Instance {
       }
 
       // Max rounds reached
-      this._trackStats(totalIn, totalOut);
+      this._trackStats(totalIn, totalOut, msg);
       const fallback = '(max tool rounds reached)';
       this._persistResponse(chatId, fallback);
       return fallback;
@@ -322,11 +392,23 @@ export class Instance {
     }
   }
 
-  _trackStats(inTok, outTok) {
+  _trackStats(inTok, outTok, msg) {
     this.stats.inputTokens += inTok;
     this.stats.outputTokens += outTok;
     this.stats.requests++;
     this.stats.totalMessages += 2;
+
+    // StatsTracker (persistent, with cost)
+    if (this.statsTracker) {
+      this.statsTracker.record({
+        model: this.model,
+        inputTokens: inTok,
+        outputTokens: outTok,
+        userId: msg?.senderId,
+        userName: msg?.senderName,
+        chatId: msg?.chatId,
+      });
+    }
   }
 
   _persistResponse(chatId, text) {
@@ -363,6 +445,10 @@ export class Instance {
       name: this.name,
       model: this.model,
       rag: this.rag?.getStats() || null,
+      costToday: this.statsTracker?.getCostToday() || 0,
+      statsToday: this.statsTracker?.getTodayData() || null,
+      autoMemory: this.autoMemory?.getStats() || null,
+      lessons: this.lessonLearner?.getStats() || null,
     };
   }
 }
