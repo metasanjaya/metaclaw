@@ -30,14 +30,20 @@ export class KimiProvider extends BaseProvider {
       body.thinking = { type: 'disabled' };
     }
 
-    const res = await fetch(`${this.baseURL}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
+    let res;
+    try {
+      res = await fetch(`${this.baseURL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (fetchErr) {
+      console.error(`[KimiProvider.chat] Fetch error:`, fetchErr.message, fetchErr.code);
+      throw new Error(`Kimi fetch failed: ${fetchErr.message} (${fetchErr.code || 'unknown'})`);
+    }
 
     if (!res.ok) {
       const err = await res.text();
@@ -102,14 +108,20 @@ export class KimiProvider extends BaseProvider {
       body.thinking = { type: 'disabled' };
     }
 
-    const res = await fetch(`${this.baseURL}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
+    let res;
+    try {
+      res = await fetch(`${this.baseURL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (fetchErr) {
+      console.error(`[KimiProvider] Fetch error:`, fetchErr.message, fetchErr.code);
+      throw new Error(`Kimi fetch failed: ${fetchErr.message} (${fetchErr.code || 'unknown'})`);
+    }
 
     if (!res.ok) {
       const err = await res.text();
