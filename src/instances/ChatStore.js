@@ -37,7 +37,7 @@ export class ChatStore {
       'SELECT * FROM messages WHERE chat_id = ? ORDER BY timestamp DESC LIMIT ?'
     );
     this._getConvStmt = this.db.prepare(
-      'SELECT role, text as content FROM messages WHERE chat_id = ? ORDER BY timestamp ASC LIMIT ?'
+      'SELECT role, text as content, metadata FROM messages WHERE chat_id = ? ORDER BY timestamp ASC LIMIT ?'
     );
   }
 
@@ -70,10 +70,23 @@ export class ChatStore {
    * Get conversation messages for AI context (oldest first)
    * @param {string} chatId
    * @param {number} limit
-   * @returns {Array<{role:string, content:string}>}
+   * @returns {Array<{role:string, content:string, reasoning_content?:string}>}
    */
   getConversation(chatId, limit = 50) {
-    return this._getConvStmt.all(chatId, limit);
+    const rows = this._getConvStmt.all(chatId, limit);
+    return rows.map(row => {
+      const msg = { role: row.role, content: row.content };
+      // Extract reasoning_content from metadata if present
+      if (row.metadata) {
+        try {
+          const meta = JSON.parse(row.metadata);
+          if (meta.reasoningContent !== undefined) {
+            msg.reasoning_content = meta.reasoningContent;
+          }
+        } catch {}
+      }
+      return msg;
+    });
   }
 
   close() {

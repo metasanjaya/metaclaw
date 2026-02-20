@@ -314,13 +314,20 @@ export class Instance {
   /**
    * Get conversation history from persistent store
    * @param {string} chatId
-   * @returns {Array<{role:string, content:string}>}
+   * @returns {Array<{role:string, content:string, reasoning_content?:string}>}
    */
   _getConversation(chatId) {
-    if (this.chatStore) {
-      return this.chatStore.getConversation(chatId, 50);
+    if (!this.chatStore) return [];
+    const messages = this.chatStore.getConversation(chatId, 50);
+    // Kimi requires reasoning_content on all assistant messages when tools are used
+    if (this.model?.includes('kimi')) {
+      for (const msg of messages) {
+        if (msg.role === 'assistant') {
+          msg.reasoning_content = '';
+        }
+      }
     }
-    return [];
+    return messages;
   }
 
   /** Get last assistant message for a chat (for correction detection) */
@@ -392,7 +399,8 @@ export class Instance {
         if (!response.toolCalls || response.toolCalls.length === 0) {
           const text = response.text || '';
           this._trackStats(totalIn, totalOut, msg);
-          this._persistResponse(chatId, text);
+          const metadata = response.reasoningContent ? { reasoningContent: response.reasoningContent } : null;
+          this._persistResponse(chatId, text, metadata);
           this._reindexIfNeeded();
           return text;
         }
@@ -450,9 +458,9 @@ export class Instance {
     }
   }
 
-  _persistResponse(chatId, text) {
+  _persistResponse(chatId, text, metadata = null) {
     if (this.chatStore) {
-      this.chatStore.save({ id: crypto.randomUUID(), chatId, role: 'assistant', text, timestamp: Date.now() });
+      this.chatStore.save({ id: crypto.randomUUID(), chatId, role: 'assistant', text, timestamp: Date.now(), metadata });
     }
     this.eventBus.emit('instance.response', { instanceId: this.id, chatId, text, model: this.model });
   }
