@@ -15,17 +15,17 @@
   <div class="icon-sidebar">
     <div class="logo" @click="page='dashboard'" title="MetaClaw">⚡</div>
 
-    <div class="sidebar-icon" :class="page==='dashboard' ? 'active' : ''" @click="page='dashboard'">
+    <div class="sidebar-icon" :class="page==='dashboard' ? 'active' : ''" @click="navigate('dashboard')">
       📊<span class="tooltip">Dashboard</span>
     </div>
-    <div class="sidebar-icon" :class="page==='chat' ? 'active' : ''" @click="page='chat'">
+    <div class="sidebar-icon" :class="page==='chat' ? 'active' : ''" @click="navigate('chat')">
       💬<span class="tooltip">Chat</span>
       <div class="badge-dot" x-show="false"></div>
     </div>
-    <div class="sidebar-icon" :class="page==='health' ? 'active' : ''" @click="page='health'">
+    <div class="sidebar-icon" :class="page==='health' ? 'active' : ''" @click="navigate('health')">
       🩺<span class="tooltip">Health</span>
     </div>
-    <div class="sidebar-icon" :class="page==='settings' ? 'active' : ''" @click="page='settings'">
+    <div class="sidebar-icon" :class="page==='settings' ? 'active' : ''" @click="navigate('settings')">
       ⚙️<span class="tooltip">Settings</span>
     </div>
 
@@ -265,7 +265,13 @@
 <script>
 function app() {
   return {
-    page: location.pathname.startsWith('/chat') ? 'chat' : 'dashboard',
+    page: (() => {
+      const p = location.pathname;
+      if (p.startsWith('/chat')) return 'chat';
+      if (p.startsWith('/health')) return 'health';
+      if (p.startsWith('/settings')) return 'settings';
+      return 'dashboard';
+    })(),
     connected: false, ws: null,
     instances: [], instanceStats: {},
     feed: [], feedTab: 'All',
@@ -292,15 +298,28 @@ function app() {
     get totalOutputTokens() { return Object.values(this.instanceStats).reduce((a,s) => a + (s.outputTokens||0), 0); },
 
     init() {
-      // Parse /chat/:id from URL
-      const parts = location.pathname.split('/');
-      if (parts[1] === 'chat' && parts[2]) {
-        this.page = 'chat';
-        this.chatInstanceId = parts[2];
-      }
+      // Parse URL on load
+      this._parseUrl();
+      // Handle browser back/forward
+      window.addEventListener('popstate', () => this._parseUrl());
       this.connectWs();
       this.pollStats();
       setInterval(() => this.pollStats(), 15000);
+    },
+
+    _parseUrl() {
+      const p = location.pathname;
+      const parts = p.split('/');
+      if (parts[1] === 'chat') {
+        this.page = 'chat';
+        if (parts[2]) this.chatInstanceId = parts[2];
+      } else if (parts[1] === 'health') {
+        this.page = 'health';
+      } else if (parts[1] === 'settings') {
+        this.page = 'settings';
+      } else {
+        this.page = 'dashboard';
+      }
     },
 
     connectWs() {
@@ -344,6 +363,12 @@ function app() {
       }
     },
 
+    navigate(pg) {
+      this.page = pg;
+      const url = pg === 'dashboard' ? '/' : pg === 'chat' && this.chatInstanceId ? '/chat/' + this.chatInstanceId : '/' + pg;
+      history.pushState({}, '', url);
+    },
+
     selectInstance(id) {
       if (this.chatInstanceId && this.chatInstanceId !== id) {
         this.ws?.send(JSON.stringify({ type: 'leave_chat' }));
@@ -352,7 +377,7 @@ function app() {
       this.currentInstance = this.instances.find(i => i.id === id);
       this.chatMessages = [];
       this.chatTyping = false;
-      history.replaceState(null, '', '/chat/' + id);
+      history.pushState({}, '', '/chat/' + id);
       this.ws?.send(JSON.stringify({ type: 'join_chat', instanceId: id }));
       this.$nextTick(() => this.$refs.chatInputEl?.focus());
     },
