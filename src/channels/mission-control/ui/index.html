@@ -260,7 +260,7 @@
     </template>
 
     <!-- Delete Instance Confirm Modal -->
-    <div x-show="showDeleteConfirm" x-transition.opacity style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1001;display:flex;align-items:center;justify-content:center;" @click.self="showDeleteConfirm=false" @keydown.escape.window="showDeleteConfirm=false">
+    <div x-show="showDeleteConfirm" x-transition.opacity style="position:fixed;inset:0;background:rgba(0,0,0,0.5);backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px);z-index:1001;display:flex;align-items:center;justify-content:center;" @click.self="showDeleteConfirm=false" @keydown.escape.window="showDeleteConfirm=false">
       <div class="card" style="width:400px;max-width:90vw;" @click.stop>
         <div style="text-align:center;margin-bottom:16px;">
           <div style="font-size:40px;margin-bottom:8px;" x-text="deleteTarget?.emoji || '🤖'"></div>
@@ -513,7 +513,7 @@
     </template>
 
     <!-- Add Instance Modal -->
-    <div x-show="showAddInstance" x-transition.opacity style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1000;display:flex;align-items:center;justify-content:center;" @click.self="showAddInstance=false" @keydown.escape.window="showAddInstance=false">
+    <div x-show="showAddInstance" x-transition.opacity style="position:fixed;inset:0;background:rgba(0,0,0,0.5);backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px);z-index:1000;display:flex;align-items:center;justify-content:center;" @click.self="showAddInstance=false" @keydown.escape.window="showAddInstance=false">
       <div class="card" style="width:440px;max-width:90vw;" @click.stop>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
           <h3 style="font-size:15px;font-weight:600;">🤖 New Instance</h3>
