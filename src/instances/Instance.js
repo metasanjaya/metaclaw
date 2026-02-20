@@ -4,6 +4,7 @@ import { KnowledgeManager } from './KnowledgeManager.js';
 import { ToolExecutor } from './ToolExecutor.js';
 import { TopicManager } from './TopicManager.js';
 import { RAGEngine } from './RAGEngine.js';
+import { EmbeddingManager } from '../ai/EmbeddingManager.js';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -102,9 +103,24 @@ export class Instance {
       } catch (e) { console.error(`[Instance:${this.id}] Topics error:`, e.message); }
 
       try {
-        this.rag = new RAGEngine(this.dataDir);
-        this.rag.initialize();
-        console.log(`[Instance:${this.id}] RAG initialized (${this.rag.chunks.length} chunks)`);
+        // Init embedding manager (config: embedding.provider, embedding.model, etc.)
+        const embConfig = this.config.embedding || {};
+        let embedder = null;
+        if (embConfig.provider || embConfig.enabled !== false) {
+          // Default to local if no explicit provider set
+          embedder = new EmbeddingManager({
+            provider: embConfig.provider || 'local',
+            model: embConfig.model,
+            api_url: embConfig.api_url,
+            api_key: embConfig.api_key,
+            api_model: embConfig.api_model,
+            dimensions: embConfig.dimensions,
+          });
+        }
+        this.rag = new RAGEngine(this.dataDir, { embedder });
+        await this.rag.initialize();
+        const stats = this.rag.getStats();
+        console.log(`[Instance:${this.id}] RAG initialized (${stats.totalChunks} chunks, ${stats.embeddedChunks} embedded, provider: ${stats.provider})`);
       } catch (e) { console.error(`[Instance:${this.id}] RAG error:`, e.message); }
     }
 
@@ -145,7 +161,7 @@ export class Instance {
    * 7. RAG (retrieved chunks from memory/knowledge)
    * 8. Topic context hint
    */
-  _buildSystemPrompt(userMessage = '', chatId = '') {
+  async _buildSystemPrompt(userMessage = '', chatId = '') {
     const parts = [];
     const dir = this.config._dir;
 
@@ -191,9 +207,9 @@ export class Instance {
       if (kCtx) parts.push('\n' + kCtx);
     }
 
-    // 7. RAG (retrieved context)
+    // 7. RAG (retrieved context — may be async with embeddings)
     if (this.rag && userMessage) {
-      const ragCtx = this.rag.getContextForPrompt(userMessage, 2000);
+      const ragCtx = await Promise.resolve(this.rag.getContextForPrompt(userMessage, 2000));
       if (ragCtx) parts.push('\n' + ragCtx);
     }
 
@@ -242,7 +258,7 @@ export class Instance {
     }
 
     const conversation = this._getConversation(chatId);
-    const systemPrompt = this._buildSystemPrompt(msg.text, chatId);
+    const systemPrompt = await this._buildSystemPrompt(msg.text, chatId);
     const tools = this.tools?.getToolDefinitions() || [];
 
     console.log(`[Instance:${this.id}] Processing message from ${msg.senderId} (${conversation.length} msgs, ${tools.length} tools)`);
@@ -321,8 +337,8 @@ export class Instance {
   }
 
   _reindexIfNeeded() {
-    // Re-index RAG after knowledge/memory may have changed
-    if (this.rag) { try { this.rag.reindex(); } catch {} }
+    // Re-index RAG after knowledge/memory may have changed (async, fire-and-forget)
+    if (this.rag) { this.rag.reindex().catch(() => {}); }
   }
 
   /**
@@ -341,6 +357,12 @@ export class Instance {
    * Get stats summary
    */
   getStats() {
-    return { ...this.stats, id: this.id, name: this.name, model: this.model };
+    return {
+      ...this.stats,
+      id: this.id,
+      name: this.name,
+      model: this.model,
+      rag: this.rag?.getStats() || null,
+    };
   }
 }
