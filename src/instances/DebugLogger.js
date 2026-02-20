@@ -64,15 +64,16 @@ export class DebugLogger {
       messageCount: messages.length,
       messages: messages.map(m => ({
         role: m.role,
-        content: this._truncate(m.content || m.text, 2000),
+        content: m.content || m.text || null,
         hasToolCalls: !!(m.tool_calls || m.toolCalls),
-        toolCallCount: (m.tool_calls || m.toolCalls)?.length,
+        toolCalls: m.tool_calls || m.toolCalls || null,
       })),
       options: {
         maxTokens: options.maxTokens,
         temperature: options.temperature,
         toolCount: options.tools?.length,
         hasTools: !!(options.tools && options.tools.length > 0),
+        tools: options.tools || null,
       },
     };
     this.pendingRequests.set(`${provider}:${model}`, requestId);
@@ -102,15 +103,15 @@ export class DebugLogger {
       model,
       durationMs,
       response: {
-        text: this._truncate(response.text, 3000),
+        text: response.text || null,
         hasToolCalls: !!(response.toolCalls && response.toolCalls.length > 0),
         toolCallCount: response.toolCalls?.length || 0,
         toolCalls: response.toolCalls?.map(tc => ({
           name: tc.name,
           id: tc.id,
           input: tc.input,
-        })) || [],
-        reasoningContent: this._truncate(response.reasoningContent, 1000),
+        })) || null,
+        reasoningContent: response.reasoningContent || null,
       },
     };
     this._writeFile(`${requestId}-response.json`, entry);
@@ -144,11 +145,5 @@ export class DebugLogger {
       },
     };
     this._writeFile(`${requestId}-error.json`, entry);
-  }
-
-  _truncate(str, maxLen) {
-    if (!str) return str;
-    if (str.length <= maxLen) return str;
-    return str.substring(0, maxLen) + '\n... [truncated ' + (str.length - maxLen) + ' chars]';
   }
 }
