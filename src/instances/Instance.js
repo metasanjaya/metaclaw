@@ -385,6 +385,32 @@ export class Instance {
       return '✅ Conversation cleared.';
     }
 
+    // Process voice message (transcribe)
+    if (msg.voicePath && existsSync(msg.voicePath)) {
+      try {
+        const transcription = await this._transcribeVoice(msg.voicePath);
+        if (transcription) {
+          msg.text = `[Voice message]: ${transcription}${msg.text ? '\n' + msg.text : ''}`;
+          console.log(`[Instance:${this.id}] Voice transcribed: "${transcription.slice(0, 80)}..."`);
+        }
+      } catch (err) {
+        console.error(`[Instance:${this.id}] Voice transcription failed:`, err.message);
+      }
+    }
+
+    // Process image (analyze with vision)
+    if (msg.imagePath && existsSync(msg.imagePath)) {
+      try {
+        const description = await this._analyzeImage(msg.imagePath, msg.text || 'Describe this image');
+        if (description) {
+          msg.text = `[Image: ${description}]${msg.text ? '\nUser asks: ' + msg.text : ''}`;
+          console.log(`[Instance:${this.id}] Image analyzed: "${description.slice(0, 80)}..."`);
+        }
+      } catch (err) {
+        console.error(`[Instance:${this.id}] Image analysis failed:`, err.message);
+      }
+    }
+
     // Classify topic
     if (this.topics) this.topics.classify(chatId, msg.text, 'user');
 
@@ -420,9 +446,11 @@ export class Instance {
         const messages = [{ role: 'system', content: systemPrompt }, ...workingMessages];
 
         // Use chatWithTools if tools available, otherwise plain chat
+        // Kimi requires temperature 0.6
+        const temperature = this.model?.includes('kimi') ? 0.6 : (this.config.temperature ?? 0.7);
         const response = tools.length > 0
-          ? await this.router.chatWithTools({ instanceId: this.id, model: this.model, messages, tools, options: { maxTokens: 4096, temperature: 0.7 } })
-          : await this.router.chat({ instanceId: this.id, model: this.model, messages, options: { maxTokens: 4096, temperature: 0.7 } });
+          ? await this.router.chatWithTools({ instanceId: this.id, model: this.model, messages, tools, options: { maxTokens: 4096, temperature } })
+          : await this.router.chat({ instanceId: this.id, model: this.model, messages, options: { maxTokens: 4096, temperature } });
 
         totalIn += response.inputTokens || 0;
         totalOut += response.outputTokens || 0;
@@ -560,5 +588,98 @@ export class Instance {
       spawner: this.spawner?.getStats() || null,
       background: this.bgTracker?.getStats() || null,
     };
+  }
+
+  /**
+   * Transcribe voice message using Google Gemini API
+   * @param {string} voicePath - Path to audio file
+   * @returns {Promise<string|null>} transcription text
+   */
+  async _transcribeVoice(voicePath) {
+    const apiKey = process.env.GOOGLE_API_KEY;
+    if (!apiKey) {
+      console.warn(`[Instance:${this.id}] GOOGLE_API_KEY not set, skipping voice transcription`);
+      return null;
+    }
+    try {
+      const { readFileSync } = await import('node:fs');
+      const audioBuffer = readFileSync(voicePath);
+      const base64 = audioBuffer.toString('base64');
+
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { inlineData: { mimeType: 'audio/ogg', data: base64 } },
+              { text: 'Transcribe this audio message. Return ONLY the transcription text, nothing else.' },
+            ],
+          }],
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`Gemini API error: ${res.status} ${err}`);
+      }
+
+      const data = await res.json();
+      const text = data.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || null;
+      if (text) console.log(`[Instance:${this.id}] Voice transcribed: "${text.substring(0, 80)}..."`);
+      return text;
+    } catch (err) {
+      console.error(`[Instance:${this.id}] Voice transcription failed:`, err.message);
+      return null;
+    }
+  }
+
+  /**
+   * Analyze image using Google Gemini Vision API
+   * @param {string} imagePath - Path to image file
+   * @param {string} prompt - Analysis prompt
+   * @returns {Promise<string|null>} description
+   */
+  async _analyzeImage(imagePath, prompt = 'Describe this image') {
+    const apiKey = process.env.GOOGLE_API_KEY;
+    if (!apiKey) {
+      console.warn(`[Instance:${this.id}] GOOGLE_API_KEY not set, skipping image analysis`);
+      return null;
+    }
+    try {
+      const { readFileSync } = await import('node:fs');
+      const imageBuffer = readFileSync(imagePath);
+      const base64 = imageBuffer.toString('base64');
+
+      // Detect mime type from extension
+      const ext = imagePath.split('.').pop()?.toLowerCase();
+      const mimeType = ext === 'png' ? 'image/png' : ext === 'gif' ? 'image/gif' : 'image/jpeg';
+
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { inlineData: { mimeType, data: base64 } },
+              { text: prompt },
+            ],
+          }],
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`Gemini API error: ${res.status} ${err}`);
+      }
+
+      const data = await res.json();
+      const text = data.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || null;
+      if (text) console.log(`[Instance:${this.id}] Image analyzed: "${text.substring(0, 80)}..."`);
+      return text;
+    } catch (err) {
+      console.error(`[Instance:${this.id}] Image analysis failed:`, err.message);
+      return null;
+    }
   }
 }

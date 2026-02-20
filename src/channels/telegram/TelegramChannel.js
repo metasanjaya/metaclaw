@@ -103,22 +103,66 @@ export class TelegramChannel extends Channel {
   }
 
   /**
-   * Handle incoming Telegram message
+   * Handle incoming Telegram message (text, photo, voice)
    */
   async _handleMessage(event) {
     const msg = event.message;
-    if (!msg || !msg.text) return;
+    if (!msg) return;
 
     const chatId = msg.chatId?.toString() || msg.peerId?.userId?.toString() || msg.peerId?.channelId?.toString() || '';
     const senderId = msg.senderId?.toString() || '';
     const myId = (await this.client.getMe()).id?.toString() || '';
 
-    console.log(`[Telegram:${this.id}] MSG from=${senderId} chat=${chatId} myId=${myId} text="${msg.text?.slice(0,50)}"`);
+    // Handle photo media
+    let imagePath = null;
+    if (msg.photo) {
+      try {
+        const imgDir = join(process.cwd(), 'data', 'images', this.id);
+        if (!existsSync(imgDir)) mkdirSync(imgDir, { recursive: true });
+        imagePath = join(imgDir, `${Date.now()}_${msg.id}.jpg`);
+        const buffer = await this.client.downloadMedia(msg, {});
+        if (buffer) {
+          writeFileSync(imagePath, buffer);
+          console.log(`📷 [Telegram:${this.id}] Downloaded image: ${imagePath}`);
+        } else {
+          imagePath = null;
+        }
+      } catch (err) {
+        console.error(`❌ [Telegram:${this.id}] Image download failed:`, err.message);
+        imagePath = null;
+      }
+    }
+
+    // Handle voice/audio messages
+    let voicePath = null;
+    const isVoice = msg.voice || msg.audio || (msg.media?.className === 'MessageMediaDocument' && msg.media?.document?.mimeType?.startsWith('audio/'));
+    if (isVoice) {
+      try {
+        const voiceDir = join(process.cwd(), 'data', 'voices', this.id);
+        if (!existsSync(voiceDir)) mkdirSync(voiceDir, { recursive: true });
+        voicePath = join(voiceDir, `${Date.now()}_${msg.id}.ogg`);
+        const buffer = await this.client.downloadMedia(msg, {});
+        if (buffer) {
+          writeFileSync(voicePath, buffer);
+          console.log(`🎤 [Telegram:${this.id}] Downloaded voice: ${voicePath}`);
+        } else {
+          voicePath = null;
+        }
+      } catch (err) {
+        console.error(`❌ [Telegram:${this.id}] Voice download failed:`, err.message);
+        voicePath = null;
+      }
+    }
+
+    const text = msg.text || msg.caption || '';
+    if (!text && !imagePath && !voicePath) return;
+
+    console.log(`[Telegram:${this.id}] MSG from=${senderId} chat=${chatId} myId=${myId} text="${text?.slice(0,50)}" image=${!!imagePath} voice=${!!voicePath}`);
 
     // Cache the raw event for reply
     this._lastEvents.set(chatId, event);
 
-    // Skip own messages
+    // Skip own messages (unless it's a voice/image with no text - but still skip)
     if (senderId === myId) {
       console.log(`[Telegram:${this.id}] Skipping own message`);
       return;
@@ -145,9 +189,11 @@ export class TelegramChannel extends Channel {
       channelId: this.id,
       chatId,
       senderId,
-      text: msg.text,
+      text,
       replyTo: msg.replyToMsgId?.toString() || null,
       timestamp: (msg.date || Math.floor(Date.now() / 1000)) * 1000,
+      imagePath,
+      voicePath,
       raw: msg,
     });
   }

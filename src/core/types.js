@@ -6,6 +6,8 @@
  * @property {string} senderId
  * @property {string} [text]
  * @property {MediaPayload} [media]
+ * @property {string} [imagePath] — local path to downloaded image (Telegram)
+ * @property {string} [voicePath] — local path to downloaded voice/audio (Telegram)
  * @property {string} [replyTo]
  * @property {number} timestamp
  * @property {*} raw — channel-specific raw data
