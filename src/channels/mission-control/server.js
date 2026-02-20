@@ -230,6 +230,69 @@ export class MCServer {
       });
     });
 
+    // --- Instance files (SOUL.md, MY_RULES.md) ---
+    this.app.get('/api/instances/:id/files', async (res, req) => {
+      res.onAborted(() => {});
+      const id = req.getParameter(0);
+      const { readFileSync, existsSync } = await import('node:fs');
+      const { join } = await import('node:path');
+      const dir = join(this.instanceManager.configManager.baseDir, 'instances', id);
+      if (!existsSync(dir)) { res.cork(() => { res.writeStatus('404'); this._json(res, { error: 'Not found' }); }); return; }
+      const soul = existsSync(join(dir, 'SOUL.md')) ? readFileSync(join(dir, 'SOUL.md'), 'utf8') : '';
+      const rules = existsSync(join(dir, 'MY_RULES.md')) ? readFileSync(join(dir, 'MY_RULES.md'), 'utf8') : '';
+      this._json(res, { soul, rules });
+    });
+
+    this.app.post('/api/instances/:id/files', (res, req) => {
+      res.onAborted(() => {});
+      const id = req.getParameter(0);
+      this._readBody(res, async (body) => {
+        try {
+          const data = JSON.parse(body);
+          const { writeFileSync, existsSync } = await import('node:fs');
+          const { join } = await import('node:path');
+          const dir = join(this.instanceManager.configManager.baseDir, 'instances', id);
+          if (!existsSync(dir)) throw new Error('Instance not found');
+          if (data.soul !== undefined) writeFileSync(join(dir, 'SOUL.md'), data.soul);
+          if (data.rules !== undefined) writeFileSync(join(dir, 'MY_RULES.md'), data.rules);
+          this._json(res, { ok: true });
+        } catch (e) {
+          res.cork(() => { res.writeStatus('400'); this._json(res, { error: e.message }); });
+        }
+      });
+    });
+
+    // --- Instance channels management ---
+    this.app.post('/api/instances/:id/channels', (res, req) => {
+      res.onAborted(() => {});
+      const id = req.getParameter(0);
+      this._readBody(res, async (body) => {
+        try {
+          const data = JSON.parse(body);
+          const yaml = (await import('js-yaml')).default;
+          const { writeFileSync, readFileSync, existsSync } = await import('node:fs');
+          const { join } = await import('node:path');
+          const dir = join(this.instanceManager.configManager.baseDir, 'instances', id);
+          if (!existsSync(dir)) throw new Error('Instance not found');
+          const cfgPath = join(dir, 'config.yaml');
+          const cfg = yaml.load(readFileSync(cfgPath, 'utf8')) || {};
+          if (data.channels) cfg.channels = data.channels;
+          if (data.telegram !== undefined) {
+            if (data.telegram === false) {
+              delete cfg.telegram;
+            } else if (typeof data.telegram === 'object') {
+              cfg.telegram = { ...cfg.telegram, ...data.telegram, enabled: true };
+            }
+          }
+          writeFileSync(cfgPath, yaml.dump(cfg));
+          this.instanceManager.configManager.load();
+          this._json(res, { ok: true, message: 'Restart instance to apply channel changes' });
+        } catch (e) {
+          res.cork(() => { res.writeStatus('400'); this._json(res, { error: e.message }); });
+        }
+      });
+    });
+
     this.app.get('/api/tasks', (res) => {
       res.onAborted(() => {});
       // TODO: wire to actual task system
