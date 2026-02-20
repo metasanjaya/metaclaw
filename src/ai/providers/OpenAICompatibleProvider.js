@@ -66,8 +66,8 @@ export class OpenAICompatibleProvider extends BaseProvider {
             }
           }))
         };
-        // Kimi requires reasoning_content in ALL assistant messages when thinking is enabled
-        assistantMsg.reasoning_content = msg.reasoningContent ?? msg.reasoning_content ?? '';
+        // Kimi: for tool call messages, use null instead of empty string
+        assistantMsg.reasoning_content = msg.reasoningContent ?? msg.reasoning_content ?? null;
         return assistantMsg;
       } else if (msg.role === 'tool' || (msg.role === 'user' && (msg.toolResults || msg.tool_results))) {
         const results = msg.toolResults || msg.tool_results || [msg];
@@ -80,6 +80,10 @@ export class OpenAICompatibleProvider extends BaseProvider {
     const createOpts = { model, messages: openaiMessages, tools: openaiTools, max_tokens: maxTokens, temperature };
     if (this.name !== 'kimi') {
       createOpts.tool_choice = openaiToolChoice;
+    }
+    // Kimi: disable thinking when using tools (incompatible)
+    if (this.name === 'kimi') {
+      createOpts.extra_body = { thinking: { type: 'disabled' } };
     }
     // Kimi: ALL assistant messages need reasoning_content when thinking is enabled (avoid 400 error)
     if (this.name === 'kimi') {
