@@ -572,15 +572,31 @@ function app() {
       if (msg.type === 'welcome') {
         this.instances = msg.instances || [];
         this.currentInstance = this.instances.find(i => i.id === this.chatInstanceId);
+        // Fetch last message previews for all instances
+        for (const inst of this.instances) {
+          fetch(`/api/chat/${inst.id}/history`).then(r => r.json()).then(msgs => {
+            if (msgs?.length > 0) {
+              const last = msgs[msgs.length - 1];
+              this.lastMessages = { ...this.lastMessages, [inst.id]: last.text?.slice(0, 50) || '' };
+              this.lastTimes = { ...this.lastTimes, [inst.id]: this.fmtTime(last.timestamp) };
+            }
+          }).catch(() => {});
+        }
       } else if (msg.type === 'chat_history') {
         this.chatMessages = msg.messages || [];
+        // Update sidebar preview from history
+        if (msg.messages?.length > 0) {
+          const last = msg.messages[msg.messages.length - 1];
+          this.lastMessages = { ...this.lastMessages, [msg.instanceId]: last.text?.slice(0, 50) || '' };
+          this.lastTimes = { ...this.lastTimes, [msg.instanceId]: this.fmtTime(last.timestamp) };
+        }
         this.$nextTick(() => this.scrollChat());
       } else if (msg.type === 'chat_message') {
         this.chatMessages.push(msg.message);
         if (msg.message.role === 'assistant') this.chatTyping = false;
         // Update last message for chat list
-        this.lastMessages[msg.message.instanceId] = msg.message.text?.slice(0, 50) || '';
-        this.lastTimes[msg.message.instanceId] = this.fmtTime(msg.message.timestamp);
+        this.lastMessages = { ...this.lastMessages, [msg.message.instanceId]: msg.message.text?.slice(0, 50) || '' };
+        this.lastTimes = { ...this.lastTimes, [msg.message.instanceId]: this.fmtTime(msg.message.timestamp) };
         this.$nextTick(() => this.scrollChat());
       } else if (msg.type === 'event') {
         const evt = msg.data || {};
