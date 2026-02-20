@@ -84,6 +84,17 @@ export class Instance {
   async start() {
     this.status = 'initializing';
     this.eventBus.emit('instance.spawn', { id: this.id, name: this.name });
+    
+    // Init debug logger
+    this.debugLogger = new DebugLogger(this.dataDir, this.config.debug === true);
+    if (this.config.debug) {
+      console.log(`[Instance:${this.id}] Debug logging enabled`);
+      // Set debug logger on router's AI client if available
+      if (this.router?._client?.setDebugLogger) {
+        this.router._client.setDebugLogger(this.debugLogger);
+      }
+    }
+    
     // Init persistent chat store
     if (this.dataDir) {
       try {

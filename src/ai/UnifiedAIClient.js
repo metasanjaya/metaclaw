@@ -52,12 +52,21 @@ export class UnifiedAIClient {
     this.config = config;
     this.providers = {};
     this.localModel = null;
+    this.debugLogger = config.debugLogger || null;
 
     this.systemPrompt = config.systemPrompt || `You are a helpful assistant. Be concise.
 Only provide what's asked, no extra explanation unless requested.
 If a simple answer suffices, give it without elaboration.`;
 
     this._initializeProviders();
+  }
+
+  /**
+   * Set debug logger for API request/response logging
+   * @param {DebugLogger} logger
+   */
+  setDebugLogger(logger) {
+    this.debugLogger = logger;
   }
 
   /** @private */
@@ -257,6 +266,9 @@ If a simple answer suffices, give it without elaboration.`;
 
     const { provider, model } = this._resolve(options);
     const finalModel = options.model || model;
+    const startTime = Date.now();
+    const optsWithTools = { ...options, tools };
+    this.debugLogger?.logRequest(provider, finalModel, messages, optsWithTools);
 
     try {
       const p = this._getProvider(provider);
@@ -264,7 +276,9 @@ If a simple answer suffices, give it without elaboration.`;
       // If provider doesn't support chatWithTools, use regular chat
       if (!p.chatWithTools || typeof p.chatWithTools !== 'function') {
         console.warn(`⚠️ Provider ${provider} doesn't support native tool calling, falling back to chat()`);
-        return await p.chat(messages, { model: finalModel, maxTokens, temperature });
+        const result = await p.chat(messages, { model: finalModel, maxTokens, temperature });
+        this.debugLogger?.logResponse(provider, finalModel, result, Date.now() - startTime);
+        return result;
       }
       
       const result = await p.chatWithTools(
@@ -274,8 +288,10 @@ If a simple answer suffices, give it without elaboration.`;
       );
       
       // Post-process text but preserve tool calls
+      this.debugLogger?.logResponse(provider, finalModel, result, Date.now() - startTime);
       return { ...result, text: this._postProcess(result.text) };
     } catch (error) {
+      this.debugLogger?.logError(provider, finalModel, error, Date.now() - startTime);
       const fbProvider = this.config.fallbackProvider || process.env.AI_FALLBACK_PROVIDER;
       const fbModel = this.config.fallbackModel || process.env.AI_FALLBACK_MODEL;
       if (fbProvider && this.providers[fbProvider]) {
