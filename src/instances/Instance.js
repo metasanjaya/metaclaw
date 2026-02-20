@@ -137,10 +137,10 @@ export class Instance {
       const text = response.text || response.content || '';
 
       // Track stats
-      if (response.usage) {
-        this.stats.inputTokens += response.usage.inputTokens || response.usage.prompt_tokens || 0;
-        this.stats.outputTokens += response.usage.outputTokens || response.usage.completion_tokens || 0;
-      }
+      const inTok = response.inputTokens || response.usage?.inputTokens || response.usage?.prompt_tokens || 0;
+      const outTok = response.outputTokens || response.usage?.outputTokens || response.usage?.completion_tokens || 0;
+      this.stats.inputTokens += inTok;
+      this.stats.outputTokens += outTok;
       this.stats.requests++;
 
       // Persist assistant response
