@@ -42,9 +42,27 @@ export class ToolExecutor {
 
   _resolve(p) { return isAbsolute(p) ? p : resolve(this.workspace, p); }
 
+  _time() {
+    const now = new Date();
+    const tz = this.instance?.config?.timezone || process.env.TZ || 'UTC';
+    const utc = now.toISOString();
+    const local = now.toLocaleString('en-US', {
+      timeZone: tz,
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    });
+    const unix = now.getTime();
+    return `UTC: ${utc}\n${tz}: ${local}\nUnix: ${unix}`;
+  }
+
   /** Get native function calling tool definitions */
   getToolDefinitions() {
     return [
+      {
+        name: 'time',
+        description: 'Get current date and time in UTC and instance timezone. Use before creating schedules or answering time-related questions.',
+        params: { type: 'object', properties: {} },
+      },
       {
         name: 'shell',
         description: 'Run a shell command. Returns stdout, stderr, exitCode.',
@@ -252,6 +270,7 @@ export class ToolExecutor {
   async execute(name, input = {}) {
     try {
       switch (name) {
+        case 'time': return this._time();
         case 'shell': return await this._shell(input.command, input.timeout);
         case 'search': return JSON.stringify(await this._search(input.query, input.count));
         case 'fetch': return JSON.stringify(await this._fetch(input.url, input.maxChars));
