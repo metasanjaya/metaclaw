@@ -735,8 +735,13 @@ function app() {
         const evt = msg.data || {};
         const feedItem = this._formatFeedEvent(msg.event, evt);
         if (feedItem) {
-          this.feed.unshift(feedItem);
-          if (this.feed.length > 100) this.feed.pop();
+          // Dedupe: skip if same text within 2 seconds
+          const isDupe = this.feed.length > 0 && this.feed[0].text === feedItem.text &&
+            this.feed[0].agent === feedItem.agent;
+          if (!isDupe) {
+            this.feed.unshift(feedItem);
+            if (this.feed.length > 100) this.feed.pop();
+          }
         }
         if (msg.event?.startsWith('instance.')) {
           fetch('/api/instances').then(r => r.json()).then(d => this.instances = d).catch(() => {});
