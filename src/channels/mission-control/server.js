@@ -297,6 +297,8 @@ export class MCServer {
    * Wire EventBus events to WebSocket broadcast
    */
   _wireEvents() {
+    if (this._eventsWired) return;
+    this._eventsWired = true;
     const events = ['instance.spawn', 'instance.stop', 'instance.crash', 'health.check', 'health.incident', 'doctor.incident', 'doctor.resolved', 'message.out', 'instance.response'];
     for (const event of events) {
       this.eventBus.on(event, (data) => {
