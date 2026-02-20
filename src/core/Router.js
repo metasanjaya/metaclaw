@@ -11,6 +11,20 @@ export class Router {
     this.globalConfig = globalConfig;
     /** @type {any} */
     this._client = null;
+    /** @type {import('../instances/DebugLogger.js').DebugLogger|null} */
+    this.debugLogger = null;
+  }
+
+  /**
+   * Set debug logger for API request/response logging
+   * @param {import('../instances/DebugLogger.js').DebugLogger} logger
+   */
+  setDebugLogger(logger) {
+    this.debugLogger = logger;
+    // Also set on UnifiedAIClient if available
+    if (this._client?.setDebugLogger) {
+      this._client.setDebugLogger(logger);
+    }
   }
 
   /**
@@ -78,6 +92,9 @@ export class Router {
       const provider = this._resolveProvider(modelName);
       console.log(`[Router] Resolved provider for ${modelName}:`, provider ? provider.name || 'found' : 'null');
 
+      // Debug logging
+      this.debugLogger?.logRequest(provider?.name || 'unknown', modelName, messages, options);
+
       let response;
       if (provider) {
         console.log(`[Router] Calling ${provider.name || 'provider'}.chat()`);
@@ -98,6 +115,9 @@ export class Router {
         });
       }
 
+      // Debug logging
+      this.debugLogger?.logResponse(provider?.name || 'unknown', modelName, response, Date.now() - start);
+
       const latency = Date.now() - start;
       this.eventBus.emit('ai.response', {
         instanceId, model, latency,
@@ -106,6 +126,9 @@ export class Router {
 
       return response;
     } catch (e) {
+      // Debug logging
+      const providerName = this._resolveProvider(modelName)?.name || 'unknown';
+      this.debugLogger?.logError(providerName, modelName, e, Date.now() - start);
       this.eventBus.emit('ai.error', { instanceId, model, error: e.message });
       throw e;
     }
@@ -133,12 +156,19 @@ export class Router {
       return this.chat({ instanceId, model, messages, options });
     }
 
+    // Debug logging
+    const optsWithTools = { ...options, tools };
+    this.debugLogger?.logRequest(provider?.name || 'unknown', modelName, messages, optsWithTools);
+
     try {
       const result = await provider.chatWithTools(messages, tools, {
         model: modelName,
         maxTokens: options.maxTokens || 4096,
         temperature: options.temperature || 0.7,
       });
+
+      // Debug logging
+      this.debugLogger?.logResponse(provider?.name || 'unknown', modelName, result, Date.now() - start);
 
       const latency = Date.now() - start;
       this.eventBus.emit('ai.response', { instanceId, model, latency });
@@ -150,6 +180,8 @@ export class Router {
         outputTokens: result.outputTokens || 0,
       };
     } catch (e) {
+      // Debug logging
+      this.debugLogger?.logError(provider?.name || 'unknown', modelName, e, Date.now() - start);
       this.eventBus.emit('ai.error', { instanceId, model, error: e.message });
       throw e;
     }
