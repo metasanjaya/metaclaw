@@ -38,8 +38,11 @@ export class DebugLogger {
 
   _writeFile(filename, data) {
     try {
-      const filepath = join(this._getLogDir(), filename);
+      const logDir = this._getLogDir();
+      const filepath = join(logDir, filename);
+      console.log(`[DebugLogger] Writing to ${filepath}`);
       writeFileSync(filepath, JSON.stringify(data, null, 2));
+      console.log(`[DebugLogger] Successfully wrote ${filename}`);
     } catch (e) {
       console.error(`[DebugLogger] Failed to write ${filename}: ${e.message}`);
     }
@@ -54,6 +57,7 @@ export class DebugLogger {
    * @returns {number} requestId - Timestamp used for request file
    */
   logRequest(provider, model, messages, options = {}) {
+    console.log(`[DebugLogger] logRequest called: enabled=${this.enabled}, provider=${provider}, model=${model}`);
     if (!this.enabled) return null;
     const requestId = this._getTimestamp();
     const entry = {
