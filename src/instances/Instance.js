@@ -32,7 +32,7 @@ export class Instance {
     this.chatStore = null;
 
     /** @type {{inputTokens:number, outputTokens:number, cost:number, requests:number}} */
-    this.stats = { inputTokens: 0, outputTokens: 0, cost: 0, requests: 0 };
+    this.stats = { inputTokens: 0, outputTokens: 0, cost: 0, requests: 0, totalMessages: 0 };
   }
 
   get name() { return this.identity.name || this.id; }
@@ -54,6 +54,14 @@ export class Instance {
       } catch (e) {
         console.error(`[Instance:${this.id}] Chat store error:`, e.message);
       }
+    }
+    // Load stats from DB
+    if (this.chatStore) {
+      try {
+        const count = this.chatStore.db.prepare('SELECT COUNT(*) as c FROM messages WHERE role = ?').get('assistant');
+        this.stats.requests = count?.c || 0;
+        this.stats.totalMessages = this.chatStore.db.prepare('SELECT COUNT(*) as c FROM messages').get()?.c || 0;
+      } catch {}
     }
     this.status = 'running';
     console.log(`[Instance:${this.id}] ${this.emoji} ${this.name} is running (model: ${this.model})`);

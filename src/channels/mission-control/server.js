@@ -85,6 +85,12 @@ export class MCServer {
       }
     });
 
+    this.app.get('/api/tasks', (res) => {
+      res.onAborted(() => {});
+      // TODO: wire to actual task system
+      this._json(res, []);
+    });
+
     this.app.get('/api/stats', (res) => {
       res.onAborted(() => {});
       const stats = {};
@@ -251,7 +257,7 @@ export class MCServer {
    * Wire EventBus events to WebSocket broadcast
    */
   _wireEvents() {
-    const events = ['instance.spawn', 'instance.stop', 'instance.crash', 'health.check', 'health.incident', 'doctor.incident', 'doctor.resolved'];
+    const events = ['instance.spawn', 'instance.stop', 'instance.crash', 'health.check', 'health.incident', 'doctor.incident', 'doctor.resolved', 'message.out', 'instance.response'];
     for (const event of events) {
       this.eventBus.on(event, (data) => {
         this._broadcastAll({ type: 'event', event, data });
