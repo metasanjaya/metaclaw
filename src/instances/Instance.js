@@ -8,6 +8,8 @@ import { StatsTracker } from './StatsTracker.js';
 import { AutoMemory } from './AutoMemory.js';
 import { LessonLearner } from './LessonLearner.js';
 import { Scheduler } from './Scheduler.js';
+import { SessionSpawner } from './SessionSpawner.js';
+import { BackgroundTracker } from './BackgroundTracker.js';
 import { EmbeddingManager } from '../ai/EmbeddingManager.js';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -61,6 +63,10 @@ export class Instance {
     this.lessonLearner = null;
     /** @type {Scheduler|null} */
     this.scheduler = null;
+    /** @type {SessionSpawner|null} */
+    this.spawner = null;
+    /** @type {BackgroundTracker|null} */
+    this.bgTracker = null;
 
     /** @type {{inputTokens:number, outputTokens:number, cost:number, requests:number}} */
     this.stats = { inputTokens: 0, outputTokens: 0, cost: 0, requests: 0, totalMessages: 0 };
@@ -178,6 +184,19 @@ export class Instance {
         this.scheduler.start();
         console.log(`[Instance:${this.id}] Scheduler initialized (${this.scheduler.getStats().totalJobs} jobs)`);
       } catch (e) { console.error(`[Instance:${this.id}] Scheduler error:`, e.message); }
+    }
+
+    // SessionSpawner + BackgroundTracker
+    if (this.router) {
+      this.spawner = new SessionSpawner({
+        instanceId: this.id, router: this.router,
+        eventBus: this.eventBus, defaultModel: this.model,
+        tools: this.tools,
+      });
+      this.bgTracker = new BackgroundTracker({
+        instanceId: this.id, eventBus: this.eventBus,
+      });
+      console.log(`[Instance:${this.id}] SessionSpawner + BackgroundTracker initialized`);
     }
 
     // Load stats from DB
@@ -469,6 +488,8 @@ export class Instance {
       autoMemory: this.autoMemory?.getStats() || null,
       lessons: this.lessonLearner?.getStats() || null,
       scheduler: this.scheduler?.getStats() || null,
+      spawner: this.spawner?.getStats() || null,
+      background: this.bgTracker?.getStats() || null,
     };
   }
 }

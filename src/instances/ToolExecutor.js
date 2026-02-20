@@ -174,6 +174,69 @@ export class ToolExecutor {
           required: ['id'],
         },
       },
+      {
+        name: 'spawn',
+        description: 'Spawn an isolated sub-agent session to handle a complex task in background. Result auto-delivered when done.',
+        params: {
+          type: 'object',
+          properties: {
+            task: { type: 'string', description: 'Task/prompt for the sub-agent' },
+            model: { type: 'string', description: 'Override model (e.g. anthropic/claude-opus-4-6)' },
+            label: { type: 'string', description: 'Short label for this task' },
+            timeoutMs: { type: 'number', description: 'Timeout in ms (default 120000)' },
+          },
+          required: ['task'],
+        },
+      },
+      {
+        name: 'spawn_list',
+        description: 'List all spawned sub-agent sessions and their status.',
+        params: { type: 'object', properties: {} },
+      },
+      {
+        name: 'spawn_kill',
+        description: 'Kill a running sub-agent session.',
+        params: {
+          type: 'object',
+          properties: { id: { type: 'string', description: 'Session ID to kill' } },
+          required: ['id'],
+        },
+      },
+      {
+        name: 'bg_run',
+        description: 'Run a shell command in background. Returns immediately, auto-reports when done.',
+        params: {
+          type: 'object',
+          properties: {
+            command: { type: 'string', description: 'Shell command' },
+            timeoutMs: { type: 'number', description: 'Timeout in ms (default 300000)' },
+          },
+          required: ['command'],
+        },
+      },
+      {
+        name: 'bg_poll',
+        description: 'Check status and output of a background process.',
+        params: {
+          type: 'object',
+          properties: { id: { type: 'string', description: 'Process ID' } },
+          required: ['id'],
+        },
+      },
+      {
+        name: 'bg_list',
+        description: 'List all background processes.',
+        params: { type: 'object', properties: {} },
+      },
+      {
+        name: 'bg_kill',
+        description: 'Kill a running background process.',
+        params: {
+          type: 'object',
+          properties: { id: { type: 'string', description: 'Process ID to kill' } },
+          required: ['id'],
+        },
+      },
     ];
   }
 
@@ -197,6 +260,13 @@ export class ToolExecutor {
         case 'schedule': return this._schedule(input);
         case 'schedule_list': return this._scheduleList();
         case 'schedule_remove': return this._scheduleRemove(input.id);
+        case 'spawn': return this._spawn(input);
+        case 'spawn_list': return this._spawnList();
+        case 'spawn_kill': return this._spawnKill(input.id);
+        case 'bg_run': return this._bgRun(input);
+        case 'bg_poll': return this._bgPoll(input.id);
+        case 'bg_list': return this._bgList();
+        case 'bg_kill': return this._bgKill(input.id);
         default: return `Unknown tool: ${name}`;
       }
     } catch (e) {
@@ -348,5 +418,88 @@ export class ToolExecutor {
   /** Set current chat context (called before execute) */
   setChatContext(chatId) {
     this._currentChatId = chatId;
+  }
+
+  // ===== Spawn (sub-agents) =====
+
+  _spawn(input) {
+    const spawner = this.instance?.spawner;
+    if (!spawner) return 'No spawner available';
+    const id = spawner.spawn({
+      task: input.task,
+      model: input.model,
+      label: input.label,
+      timeoutMs: input.timeoutMs,
+      parentChatId: this._currentChatId || this.instance.id,
+      parentChannelId: 'mission-control',
+    });
+    return `✅ Spawned sub-agent: ${id} — "${(input.label || input.task).slice(0, 60)}"`;
+  }
+
+  _spawnList() {
+    const spawner = this.instance?.spawner;
+    if (!spawner) return 'No spawner';
+    const sessions = spawner.list();
+    if (!sessions.length) return 'No spawned sessions.';
+    return sessions.map(s => {
+      const elapsed = (s.elapsed / 1000).toFixed(1);
+      return `• ${s.id} [${s.status}] "${s.label}" (${elapsed}s, ${s.model})${s.error ? ` — ${s.error}` : ''}`;
+    }).join('\n');
+  }
+
+  _spawnKill(id) {
+    const spawner = this.instance?.spawner;
+    if (!spawner) return 'No spawner';
+    return spawner.kill(id) ? `✅ Killed: ${id}` : `Not found or not running: ${id}`;
+  }
+
+  // ===== Background processes =====
+
+  _bgRun(input) {
+    const tracker = this.instance?.bgTracker;
+    if (!tracker) return 'No background tracker';
+
+    // Safety check
+    const blocked = [/rm\s+-rf\s+\//, /mkfs/, /dd\s+if=/, /shutdown/, /reboot/];
+    if (blocked.some(p => p.test(input.command))) return '❌ Blocked: dangerous command';
+
+    const id = tracker.run({
+      command: input.command,
+      timeoutMs: input.timeoutMs,
+      chatId: this._currentChatId || this.instance.id,
+      channelId: 'mission-control',
+    });
+    return `✅ Background process started: ${id}\nCommand: ${input.command.slice(0, 80)}\nUse bg_poll("${id}") to check status.`;
+  }
+
+  _bgPoll(id) {
+    const tracker = this.instance?.bgTracker;
+    if (!tracker) return 'No tracker';
+    const info = tracker.poll(id);
+    if (!info) return `Process not found: ${id}`;
+
+    const elapsed = (info.elapsed / 1000).toFixed(1);
+    let result = `[${info.status}] ${info.command.slice(0, 60)} (${elapsed}s)`;
+    if (info.exitCode !== null) result += `\nExit: ${info.exitCode}`;
+    if (info.stdout) result += `\n\n${info.stdout.slice(-3000)}`;
+    if (info.stderr) result += `\n[stderr] ${info.stderr.slice(-1000)}`;
+    return result;
+  }
+
+  _bgList() {
+    const tracker = this.instance?.bgTracker;
+    if (!tracker) return 'No tracker';
+    const procs = tracker.list();
+    if (!procs.length) return 'No background processes.';
+    return procs.map(p => {
+      const elapsed = (p.elapsed / 1000).toFixed(1);
+      return `• ${p.id} [${p.status}] "${p.command}" (${elapsed}s${p.exitCode !== null ? `, exit ${p.exitCode}` : ''})`;
+    }).join('\n');
+  }
+
+  _bgKill(id) {
+    const tracker = this.instance?.bgTracker;
+    if (!tracker) return 'No tracker';
+    return tracker.kill(id) ? `✅ Killed: ${id}` : `Not found or not running: ${id}`;
   }
 }
