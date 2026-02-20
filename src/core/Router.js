@@ -76,9 +76,11 @@ export class Router {
 
       // Use provider.chat() directly for full multi-turn support
       const provider = this._resolveProvider(modelName);
+      console.log(`[Router] Resolved provider for ${modelName}:`, provider ? provider.name || 'found' : 'null');
 
       let response;
       if (provider) {
+        console.log(`[Router] Calling ${provider.name || 'provider'}.chat()`);
         response = await provider.chat(messages, {
           model: modelName,
           maxTokens: options.maxTokens || 4096,
