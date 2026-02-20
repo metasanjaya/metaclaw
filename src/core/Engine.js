@@ -7,6 +7,8 @@ import { InstanceManager } from '../instances/InstanceManager.js';
 import { Doctor } from '../doctor/Doctor.js';
 import { MeshManager } from '../mesh/MeshManager.js';
 import { MCChannel } from '../channels/mission-control/MCChannel.js';
+import { TelegramChannel } from '../channels/telegram/TelegramChannel.js';
+import { join } from 'node:path';
 
 /**
  * MetaClaw v3 Engine — main orchestrator.
@@ -51,7 +53,8 @@ export class Engine {
     // 4. Load built-in skills
     // TODO: load from code dir + instance skill dirs
 
-    // 5. Register Mission Control (default channel)
+    // 5. Register channels
+    // Mission Control (always on)
     const mcConfig = this.config.global.missionControl || { port: 3100 };
     const mc = new MCChannel({
       config: mcConfig,
@@ -59,6 +62,25 @@ export class Engine {
       instanceManager: this.instanceManager,
     });
     this.channelManager.register(mc);
+
+    // Telegram channels (per-instance)
+    for (const [id, instance] of this.instanceManager.instances) {
+      const instConfig = this.config.getInstance(id);
+      const tgConfig = instConfig?.telegram || instConfig?.channels?.telegram;
+      if (tgConfig && tgConfig.enabled !== false) {
+        const channelId = `telegram-${id}`;
+        const tg = new TelegramChannel({
+          id: channelId,
+          config: {
+            ...tgConfig,
+            sessionFile: join(instConfig._dir, 'sessions', 'telegram.session'),
+          },
+          eventBus: this.eventBus,
+        });
+        this.channelManager.register(tg);
+        instance.channelIds.push(channelId);
+      }
+    }
 
     // 6. Start instances
     if (this.opts.instanceId) {
@@ -110,26 +132,38 @@ export class Engine {
    */
   async _routeMessage(msg) {
     // For Mission Control: chatId = instanceId
-    const instance = this.instanceManager.get(msg.chatId);
-    if (instance) {
-      const response = await instance.handleMessage(msg);
-      if (response) {
-        this.channelManager.sendText(msg.channelId, msg.chatId, response);
-      }
-      return;
-    }
-
-    // Fallback: route by channel assignment
-    for (const [, inst] of this.instanceManager.instances) {
-      if (inst.channelIds.includes(msg.channelId)) {
-        const response = await inst.handleMessage(msg);
+    if (msg.channelId === 'mission-control') {
+      const instance = this.instanceManager.get(msg.chatId);
+      if (instance) {
+        const response = await instance.handleMessage(msg);
         if (response) {
           this.channelManager.sendText(msg.channelId, msg.chatId, response);
         }
         return;
       }
     }
-    console.warn(`[Engine] No instance handles message for: ${msg.chatId}`);
+
+    // For other channels: route by channel assignment
+    for (const [, inst] of this.instanceManager.instances) {
+      if (inst.channelIds.includes(msg.channelId)) {
+        const response = await inst.handleMessage(msg);
+        if (response) {
+          // Split long messages for Telegram (4096 char limit)
+          const channel = this.channelManager.get(msg.channelId);
+          const maxLen = channel?.capabilities().maxMessageLength || 4096;
+          if (response.length > maxLen) {
+            const chunks = response.match(new RegExp(`.{1,${maxLen}}`, 'gs')) || [response];
+            for (const chunk of chunks) {
+              await this.channelManager.sendText(msg.channelId, msg.chatId, chunk, { replyTo: msg.id });
+            }
+          } else {
+            await this.channelManager.sendText(msg.channelId, msg.chatId, response, { replyTo: msg.id });
+          }
+        }
+        return;
+      }
+    }
+    console.warn(`[Engine] No instance handles channel: ${msg.channelId}`);
   }
 
   /**
