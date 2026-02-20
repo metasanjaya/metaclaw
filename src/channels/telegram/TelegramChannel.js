@@ -31,6 +31,10 @@ export class TelegramChannel extends Channel {
     /** @type {Map<string, number>} rate limit: chatId → lastSendTime */
     this._lastSend = new Map();
     this._minDelay = 1500;
+    /** @type {Map<string, any>} entity cache: chatId → input entity */
+    this._entities = new Map();
+    /** @type {Map<string, any>} last event per chat for respond() */
+    this._lastEvents = new Map();
   }
 
   async connect() {
@@ -77,6 +81,11 @@ export class TelegramChannel extends Channel {
     this.botUsername = me.username || me.firstName || 'unknown';
     console.log(`[Telegram:${this.id}] Logged in as @${this.botUsername}`);
 
+    // Pre-load dialogs so GramJS can resolve entities
+    console.log(`[Telegram:${this.id}] Loading dialogs...`);
+    const dialogs = await this.client.getDialogs({ limit: 100 });
+    console.log(`[Telegram:${this.id}] Loaded ${dialogs.length} dialogs`);
+
     // Listen for messages
     this.client.addEventHandler(async (event) => {
       await this._handleMessage(event);
@@ -100,20 +109,30 @@ export class TelegramChannel extends Channel {
     const msg = event.message;
     if (!msg || !msg.text) return;
 
-    const chatId = msg.chatId?.toString() || msg.peerId?.userId?.toString() || '';
+    const chatId = msg.chatId?.toString() || msg.peerId?.userId?.toString() || msg.peerId?.channelId?.toString() || '';
     const senderId = msg.senderId?.toString() || '';
+    const myId = (await this.client.getMe()).id?.toString() || '';
+
+    console.log(`[Telegram:${this.id}] MSG from=${senderId} chat=${chatId} myId=${myId} text="${msg.text?.slice(0,50)}"`);
+
+    // Cache the raw event for reply
+    this._lastEvents.set(chatId, event);
+
+    // Skip own messages
+    if (senderId === myId) {
+      console.log(`[Telegram:${this.id}] Skipping own message`);
+      return;
+    }
 
     // Whitelist check
     if (this.whitelist.length > 0) {
       const senderBigInt = BigInt(senderId || '0');
       const chatBigInt = BigInt(chatId || '0');
       if (!this.whitelist.includes(senderBigInt) && !this.whitelist.includes(chatBigInt)) {
-        return; // Not whitelisted
+        console.log(`[Telegram:${this.id}] Not whitelisted: sender=${senderId} chat=${chatId}`);
+        return;
       }
     }
-
-    // Skip own messages
-    if (senderId === this.client?.session?.userId?.toString()) return;
 
     // Group mode: only respond to mentions
     if (msg.isGroup && this.groupMode === 'mention_only') {
@@ -143,11 +162,39 @@ export class TelegramChannel extends Channel {
     if (wait > 0) await new Promise(r => setTimeout(r, wait));
     this._lastSend.set(chatId, Date.now());
 
-    const peer = BigInt(chatId);
+    // Try respond via cached event first (most reliable)
+    const lastEvent = this._lastEvents.get(chatId);
+    if (lastEvent?.message?.respond) {
+      try {
+        await lastEvent.message.respond({ message: text });
+        this.eventBus.emit('message.out', { channelId: this.id, chatId, text });
+        return;
+      } catch (e) {
+        console.warn(`[Telegram:${this.id}] respond() failed, trying sendMessage:`, e.message);
+      }
+    }
+
+    // Fallback: resolve entity
+    let peer;
+    if (this._entities.has(chatId)) {
+      peer = this._entities.get(chatId);
+    } else {
+      try {
+        peer = await this.client.getInputEntity(BigInt(chatId));
+        this._entities.set(chatId, peer);
+      } catch {
+        try {
+          peer = await this.client.getInputEntity(chatId);
+          this._entities.set(chatId, peer);
+        } catch (e) {
+          console.error(`[Telegram:${this.id}] Cannot resolve entity for ${chatId}:`, e.message);
+          return;
+        }
+      }
+    }
+
     const params = { message: text };
     if (opts.replyTo) params.replyTo = parseInt(opts.replyTo);
-    if (opts.parseMode === 'markdown') params.parseMode = 'md';
-    if (opts.parseMode === 'html') params.parseMode = 'html';
 
     await this.client.sendMessage(peer, params);
     this.eventBus.emit('message.out', { channelId: this.id, chatId, text });

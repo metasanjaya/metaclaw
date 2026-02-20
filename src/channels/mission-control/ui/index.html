@@ -224,22 +224,118 @@
 
     <!-- ========== HEALTH ========== -->
     <template x-if="page==='health'">
-      <div style="padding:40px; width:100%; overflow-y:auto;">
-        <h2 style="font-size:16px; margin-bottom:20px;">🩺 Health Monitor</h2>
-        <div class="grid-2" style="max-width:900px;">
-          <template x-for="inst in instances" :key="inst.id">
-            <div class="card">
-              <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
-                <span x-text="inst.emoji" style="font-size:20px;"></span>
-                <span style="font-weight:600;" x-text="inst.name"></span>
-                <div class="dot" :class="inst.status === 'running' ? 'dot-green' : 'dot-red'" style="margin-left:auto;"></div>
+      <div style="padding:30px; width:100%; overflow-y:auto;" x-data="healthPage()" x-init="startPolling()">
+
+        <!-- Overall Status Banner -->
+        <div class="card" :style="`border-left:4px solid ${doctor.overall==='healthy'?'var(--green)':'var(--yellow)'};margin-bottom:20px;max-width:1100px;`">
+          <div style="display:flex;align-items:center;gap:12px;">
+            <span style="font-size:28px;" x-text="doctor.overall==='healthy' ? '✅' : '⚠️'"></span>
+            <div>
+              <div style="font-size:16px;font-weight:600;" x-text="doctor.overall==='healthy' ? 'All Systems Healthy' : 'System Degraded'"></div>
+              <div style="font-size:12px;color:var(--text-muted);">
+                Uptime: <span x-text="formatUptime(doctor.system?.appUptime || 0)"></span>
+                · PID <span x-text="doctor.system?.pid || '?'"></span>
+                · <span x-text="doctor.system?.nodeVersion || ''"></span>
               </div>
-              <div class="config-row"><span class="config-key">Status</span><span class="config-val" x-text="inst.status"></span></div>
-              <div class="config-row"><span class="config-key">Model</span><span class="config-val" x-text="inst.model?.split('/').pop()"></span></div>
-              <div class="config-row"><span class="config-key">Requests</span><span class="config-val" x-text="instanceStats[inst.id]?.requests || 0"></span></div>
             </div>
-          </template>
+            <div style="margin-left:auto;font-size:11px;color:var(--text-muted);" x-text="'Updated ' + new Date(doctor.timestamp||0).toLocaleTimeString()"></div>
+          </div>
         </div>
+
+        <!-- System Metrics -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;max-width:1100px;margin-bottom:20px;">
+          <div class="card">
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">💾 Memory</div>
+            <div style="font-size:20px;font-weight:700;" x-text="(doctor.system?.memory?.pct || 0) + '%'"></div>
+            <div style="height:6px;background:var(--bg-tertiary);border-radius:3px;margin-top:6px;overflow:hidden;">
+              <div :style="`height:100%;border-radius:3px;background:${doctor.system?.memory?.pct > 85 ? 'var(--red)' : 'var(--green)'};width:${doctor.system?.memory?.pct || 0}%`"></div>
+            </div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:4px;" x-text="formatBytes(doctor.system?.memory?.used||0) + ' / ' + formatBytes(doctor.system?.memory?.total||0)"></div>
+          </div>
+          <div class="card">
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">⚡ CPU</div>
+            <div style="font-size:20px;font-weight:700;" x-text="(doctor.system?.cpu?.usage || 0) + '%'"></div>
+            <div style="height:6px;background:var(--bg-tertiary);border-radius:3px;margin-top:6px;overflow:hidden;">
+              <div :style="`height:100%;border-radius:3px;background:${doctor.system?.cpu?.usage > 80 ? 'var(--red)' : 'var(--accent)'};width:${doctor.system?.cpu?.usage || 0}%`"></div>
+            </div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:4px;" x-text="doctor.system?.cpu?.cores + ' cores'"></div>
+          </div>
+          <div class="card">
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">🧠 Heap</div>
+            <div style="font-size:20px;font-weight:700;" x-text="formatBytes(doctor.system?.memoryUsage?.heapUsed || 0)"></div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:4px;" x-text="'of ' + formatBytes(doctor.system?.memoryUsage?.heapTotal || 0) + ' allocated'"></div>
+          </div>
+          <div class="card">
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">🔥 Incidents</div>
+            <div style="font-size:20px;font-weight:700;" :style="(doctor.incidents?.active||0) > 0 ? 'color:var(--red)' : 'color:var(--green)'" x-text="doctor.incidents?.active || 0"></div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:4px;" x-text="(doctor.incidents?.total||0) + ' total'"></div>
+          </div>
+        </div>
+
+        <!-- Channels & Instances -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;max-width:1100px;margin-bottom:20px;">
+          <!-- Channels -->
+          <div class="card">
+            <div class="card-title" style="margin-bottom:12px;">📡 Channels</div>
+            <template x-for="(health, id) in (doctor.channels || {})" :key="id">
+              <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);">
+                <div class="dot" :class="health.status==='healthy' ? 'dot-green' : 'dot-red'"></div>
+                <span style="font-size:13px;" x-text="id"></span>
+                <span style="margin-left:auto;font-size:11px;color:var(--text-muted);" x-text="health.message"></span>
+              </div>
+            </template>
+            <div x-show="!doctor.channels || Object.keys(doctor.channels).length===0" style="font-size:12px;color:var(--text-muted);">No channels</div>
+          </div>
+
+          <!-- Instances -->
+          <div class="card">
+            <div class="card-title" style="margin-bottom:12px;">🤖 Instances</div>
+            <template x-for="(health, id) in (doctor.instances || {})" :key="id">
+              <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);">
+                <div class="dot" :class="health.status==='healthy' ? 'dot-green' : 'dot-red'"></div>
+                <span style="font-size:13px;" x-text="id"></span>
+                <span style="margin-left:auto;font-size:11px;color:var(--text-muted);" x-text="health.message"></span>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- Recovery State -->
+        <div class="card" style="max-width:1100px;margin-bottom:20px;" x-show="doctor.recovery?.recentActions?.length > 0">
+          <div class="card-title" style="margin-bottom:12px;">🔧 Recovery Actions</div>
+          <div style="max-height:200px;overflow-y:auto;">
+            <template x-for="action in (doctor.recovery?.recentActions || []).slice().reverse()" :key="action.ts">
+              <div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px;border-bottom:1px solid var(--border);">
+                <span x-text="action.success ? '✅' : '❌'"></span>
+                <span style="color:var(--text-muted);" x-text="new Date(action.ts).toLocaleTimeString()"></span>
+                <span x-text="action.key" style="font-family:monospace;"></span>
+                <span x-show="action.error" style="color:var(--red);margin-left:auto;" x-text="action.error"></span>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- Incident Log -->
+        <div class="card" style="max-width:1100px;">
+          <div class="card-title" style="margin-bottom:12px;">📋 Recent Incidents</div>
+          <div style="max-height:300px;overflow-y:auto;">
+            <template x-for="inc in (doctor.incidents?.recent || []).slice().reverse()" :key="inc.id">
+              <div style="display:flex;align-items:flex-start;gap:8px;padding:8px 0;font-size:12px;border-bottom:1px solid var(--border);">
+                <span x-text="inc.resolved ? '🟢' : '🔴'" style="margin-top:1px;"></span>
+                <div style="flex:1;">
+                  <div style="display:flex;gap:8px;align-items:center;">
+                    <span style="font-weight:600;" x-text="inc.type"></span>
+                    <span style="color:var(--text-muted);font-family:monospace;" x-text="inc.module"></span>
+                    <span style="margin-left:auto;color:var(--text-muted);" x-text="new Date(inc.timestamp).toLocaleTimeString()"></span>
+                  </div>
+                  <div style="color:var(--text-muted);margin-top:2px;" x-text="inc.description"></div>
+                </div>
+              </div>
+            </template>
+            <div x-show="!doctor.incidents?.recent?.length" style="font-size:12px;color:var(--text-muted);padding:12px 0;">No incidents recorded ✨</div>
+          </div>
+        </div>
+
       </div>
     </template>
 
@@ -263,6 +359,40 @@
 </div>
 
 <script>
+function healthPage() {
+  return {
+    doctor: {},
+    _timer: null,
+    async fetchDoctor() {
+      try {
+        const r = await fetch('/api/doctor');
+        this.doctor = await r.json();
+      } catch {}
+    },
+    startPolling() {
+      this.fetchDoctor();
+      this._timer = setInterval(() => this.fetchDoctor(), 5000);
+    },
+    destroy() {
+      if (this._timer) clearInterval(this._timer);
+    },
+    formatUptime(s) {
+      if (s < 60) return s + 's';
+      if (s < 3600) return Math.floor(s/60) + 'm ' + (s%60) + 's';
+      const h = Math.floor(s/3600);
+      const m = Math.floor((s%3600)/60);
+      if (h < 24) return h + 'h ' + m + 'm';
+      return Math.floor(h/24) + 'd ' + (h%24) + 'h';
+    },
+    formatBytes(b) {
+      if (b < 1024) return b + ' B';
+      if (b < 1048576) return (b/1024).toFixed(0) + ' KB';
+      if (b < 1073741824) return (b/1048576).toFixed(1) + ' MB';
+      return (b/1073741824).toFixed(1) + ' GB';
+    },
+  };
+}
+
 function app() {
   return {
     page: (() => {

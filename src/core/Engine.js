@@ -101,6 +101,12 @@ export class Engine {
     });
     this.doctor.start();
 
+    // 8b. Wire doctor to Mission Control
+    const mcChannel = this.channelManager.get('mission-control');
+    if (mcChannel?.server) {
+      mcChannel.server.doctor = this.doctor;
+    }
+
     // 9. Start mesh
     this.mesh = new MeshManager({
       eventBus: this.eventBus,
