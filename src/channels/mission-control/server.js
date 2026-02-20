@@ -50,6 +50,34 @@ export class MCServer {
       this._json(res, health);
     });
 
+    this.app.get('/api/doctor', async (res) => {
+      res.onAborted(() => {});
+      // System stats
+      const os = await import('node:os');
+      const totalMem = os.default.totalmem();
+      const freeMem = os.default.freemem();
+      const cpus = os.default.cpus();
+      const cpuUsage = cpus.reduce((a, c) => {
+        const total = Object.values(c.times).reduce((s, t) => s + t, 0);
+        return a + (1 - c.times.idle / total);
+      }, 0) / cpus.length * 100;
+
+      const channels = await this.channelManager.healthCheckAll();
+      const instances = this.instanceManager.healthCheckAll();
+
+      this._json(res, {
+        system: {
+          memory: { total: totalMem, free: freeMem, used: totalMem - freeMem, pct: Math.round((1 - freeMem/totalMem) * 100) },
+          cpu: { cores: cpus.length, usage: Math.round(cpuUsage) },
+          uptime: process.uptime(),
+          platform: os.default.platform(),
+        },
+        channels,
+        instances,
+        overall: Object.values({...channels, ...instances}).every(h => h.status === 'healthy') ? 'healthy' : 'degraded',
+      });
+    });
+
     this.app.get('/api/stats', (res) => {
       res.onAborted(() => {});
       const stats = {};

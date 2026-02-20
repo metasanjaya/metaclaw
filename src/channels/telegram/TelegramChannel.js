@@ -1,0 +1,204 @@
+import { Channel } from '../Channel.js';
+import { TelegramClient, Api } from 'telegram';
+import { StringSession } from 'telegram/sessions/index.js';
+import { NewMessage } from 'telegram/events/index.js';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import readline from 'node:readline';
+import crypto from 'node:crypto';
+
+/**
+ * Telegram channel via GramJS (MTProto userbot).
+ */
+export class TelegramChannel extends Channel {
+  /**
+   * @param {Object} opts
+   * @param {string} [opts.id]
+   * @param {Object} opts.config — { apiId, apiHash, sessionFile, whitelist, groupMode }
+   * @param {import('../../core/EventBus.js').EventBus} opts.eventBus
+   */
+  constructor({ id, config, eventBus }) {
+    super(id || 'telegram', 'telegram', config);
+    this.eventBus = eventBus;
+    this.apiId = parseInt(config.apiId || config.api_id);
+    this.apiHash = config.apiHash || config.api_hash;
+    this.sessionFile = config.sessionFile || config.session_file || 'data/session.txt';
+    this.whitelist = (config.whitelist || []).map(id => BigInt(id));
+    this.groupMode = config.groupMode || config.group_mode || 'mention_only';
+    /** @type {TelegramClient|null} */
+    this.client = null;
+    this.botUsername = null;
+    /** @type {Map<string, number>} rate limit: chatId → lastSendTime */
+    this._lastSend = new Map();
+    this._minDelay = 1500;
+  }
+
+  async connect() {
+    this.status = 'connecting';
+
+    let sessionStr = '';
+    if (existsSync(this.sessionFile)) {
+      sessionStr = readFileSync(this.sessionFile, 'utf-8').trim();
+      console.log(`[Telegram:${this.id}] Loaded session`);
+    }
+
+    const session = new StringSession(sessionStr);
+    this.client = new TelegramClient(session, this.apiId, this.apiHash, {
+      connectionRetries: 5,
+      retryDelay: 1000,
+    });
+
+    // Check if session exists (non-interactive) or needs login
+    if (sessionStr) {
+      await this.client.connect();
+      console.log(`[Telegram:${this.id}] Connected (existing session)`);
+    } else {
+      // Interactive login
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const ask = (q) => new Promise(r => rl.question(q, r));
+
+      await this.client.start({
+        phoneNumber: () => ask('📱 Phone number: '),
+        password: () => ask('🔐 2FA Password: '),
+        phoneCode: () => ask('💬 Login code: '),
+        onError: (err) => console.error('❌ Login error:', err.message),
+      });
+      rl.close();
+
+      // Save session
+      const dir = dirname(this.sessionFile);
+      if (dir) mkdirSync(dir, { recursive: true });
+      writeFileSync(this.sessionFile, this.client.session.save());
+      console.log(`[Telegram:${this.id}] Session saved`);
+    }
+
+    // Get bot/user info
+    const me = await this.client.getMe();
+    this.botUsername = me.username || me.firstName || 'unknown';
+    console.log(`[Telegram:${this.id}] Logged in as @${this.botUsername}`);
+
+    // Listen for messages
+    this.client.addEventHandler(async (event) => {
+      await this._handleMessage(event);
+    }, new NewMessage({}));
+
+    this.status = 'connected';
+    this.eventBus.emit('channel.connect', { channelId: this.id, type: 'telegram', username: this.botUsername });
+  }
+
+  async disconnect() {
+    if (this.client) {
+      await this.client.disconnect();
+    }
+    this.status = 'disconnected';
+  }
+
+  /**
+   * Handle incoming Telegram message
+   */
+  async _handleMessage(event) {
+    const msg = event.message;
+    if (!msg || !msg.text) return;
+
+    const chatId = msg.chatId?.toString() || msg.peerId?.userId?.toString() || '';
+    const senderId = msg.senderId?.toString() || '';
+
+    // Whitelist check
+    if (this.whitelist.length > 0) {
+      const senderBigInt = BigInt(senderId || '0');
+      const chatBigInt = BigInt(chatId || '0');
+      if (!this.whitelist.includes(senderBigInt) && !this.whitelist.includes(chatBigInt)) {
+        return; // Not whitelisted
+      }
+    }
+
+    // Skip own messages
+    if (senderId === this.client?.session?.userId?.toString()) return;
+
+    // Group mode: only respond to mentions
+    if (msg.isGroup && this.groupMode === 'mention_only') {
+      if (!msg.text.includes(`@${this.botUsername}`)) return;
+    }
+
+    // Dispatch to channel handlers
+    this._dispatch({
+      id: msg.id?.toString() || crypto.randomUUID(),
+      channelId: this.id,
+      chatId,
+      senderId,
+      text: msg.text,
+      replyTo: msg.replyToMsgId?.toString() || null,
+      timestamp: (msg.date || Math.floor(Date.now() / 1000)) * 1000,
+      raw: msg,
+    });
+  }
+
+  async sendText(chatId, text, opts = {}) {
+    if (!this.client) throw new Error('Telegram not connected');
+
+    // Rate limiting
+    const now = Date.now();
+    const last = this._lastSend.get(chatId) || 0;
+    const wait = this._minDelay - (now - last);
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    this._lastSend.set(chatId, Date.now());
+
+    const peer = BigInt(chatId);
+    const params = { message: text };
+    if (opts.replyTo) params.replyTo = parseInt(opts.replyTo);
+    if (opts.parseMode === 'markdown') params.parseMode = 'md';
+    if (opts.parseMode === 'html') params.parseMode = 'html';
+
+    await this.client.sendMessage(peer, params);
+    this.eventBus.emit('message.out', { channelId: this.id, chatId, text });
+  }
+
+  async sendMedia(chatId, media, opts = {}) {
+    if (!this.client) throw new Error('Telegram not connected');
+    const peer = BigInt(chatId);
+
+    if (media.url || media.buffer) {
+      await this.client.sendFile(peer, {
+        file: media.buffer || media.url,
+        caption: media.caption || '',
+        replyTo: opts.replyTo ? parseInt(opts.replyTo) : undefined,
+      });
+    }
+  }
+
+  async sendReaction(chatId, messageId, emoji) {
+    if (!this.client) return;
+    try {
+      await this.client.invoke(new Api.messages.SendReaction({
+        peer: BigInt(chatId),
+        msgId: parseInt(messageId),
+        reaction: [new Api.ReactionEmoji({ emoticon: emoji })],
+      }));
+    } catch (e) {
+      console.warn(`[Telegram:${this.id}] Reaction failed:`, e.message);
+    }
+  }
+
+  capabilities() {
+    return {
+      reactions: true,
+      inlineButtons: true,
+      voice: true,
+      media: ['image', 'video', 'audio', 'document'],
+      maxMessageLength: 4096,
+      markdown: 'limited',
+      threads: false,
+      edit: true,
+      delete: true,
+    };
+  }
+
+  async healthCheck() {
+    const connected = this.client?.connected || false;
+    return {
+      status: connected ? 'healthy' : 'unhealthy',
+      message: `Telegram @${this.botUsername || 'unknown'} ${connected ? 'connected' : 'disconnected'}`,
+      timestamp: Date.now(),
+    };
+  }
+}
