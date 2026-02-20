@@ -123,8 +123,16 @@ export class Engine {
     // 11. Wire message routing
     this.eventBus.on('message.in', (msg) => this._routeMessage(msg));
 
-    // 12. Wire spawner/background result delivery
+    // 12. Wire spawner/background/scheduler result delivery
     this.eventBus.on('spawner.result', (evt) => {
+      const channelId = evt.channelId || 'mission-control';
+      this.channelManager.sendText(channelId, evt.chatId, evt.text).catch(() => {});
+    });
+    this.eventBus.on('background.complete', (evt) => {
+      const channelId = evt.channelId || 'mission-control';
+      this.channelManager.sendText(channelId, evt.chatId, evt.text).catch(() => {});
+    });
+    this.eventBus.on('scheduler.fired', (evt) => {
       const channelId = evt.channelId || 'mission-control';
       this.channelManager.sendText(channelId, evt.chatId, evt.text).catch(() => {});
     });
