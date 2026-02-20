@@ -509,6 +509,18 @@
           </div>
         </div>
 
+        <!-- WORKFLOW.md (read-only) -->
+        <div class="card" style="max-width:700px;margin-bottom:16px;">
+          <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;">
+            <span>📋 WORKFLOW.md <span style="font-size:9px;font-weight:normal;text-transform:none;letter-spacing:0;color:var(--text2);">(system rules — read-only)</span></span>
+            <span @click="showWorkflow = !showWorkflow" style="cursor:pointer;font-size:10px;color:var(--accent);text-transform:none;letter-spacing:0;" x-text="showWorkflow ? 'Hide ▲' : 'Show ▼'"></span>
+          </div>
+          <div x-show="showWorkflow" x-transition>
+            <textarea x-model="workflowContent" rows="10" class="modal-input" style="resize:vertical;font-size:11px;line-height:1.5;font-family:'SF Mono','Fira Code',monospace;opacity:0.7;cursor:not-allowed;" readonly></textarea>
+            <div style="font-size:10px;color:var(--text2);margin-top:4px;">📍 Location: <code>defaults/WORKFLOW.md</code> (project-level, edit via code only)</div>
+          </div>
+        </div>
+
         <!-- Instance Configs -->
         <div class="card" style="max-width:700px;margin-bottom:16px;">
           <div class="card-title">🤖 Instance Settings</div>
@@ -755,6 +767,7 @@ function settingsPage() {
     globalSaving: false, globalMsg: '',
     selectedInst: null, instConfig: null,
     instSaving: false, instMsg: '',
+    showWorkflow: false, workflowContent: '',
     memoryData: null, memorySaving: false, memoryMsg: '',
     knowledgeData: null, newFact: { tags: '', fact: '' },
     availableChannels: [
@@ -768,6 +781,11 @@ function settingsPage() {
         const d = await r.json();
         this.globalConfig.model = d.global?.model?.primary || 'anthropic/claude-sonnet-4-6';
         this.globalConfig.port = d.global?.missionControl?.port || 3100;
+      } catch {}
+      try {
+        const wr = await fetch('/api/workflow');
+        const wd = await wr.json();
+        this.workflowContent = wd.content || '';
       } catch {}
       const insts = this.$data?.instances || this.instances;
       if (insts?.length > 0) this.selectInst(insts[0].id);
