@@ -1,12 +1,16 @@
 /**
- * RAGEngine - Per-instance Retrieval-Augmented Generation
+ * RAGEngine — Per-instance Retrieval-Augmented Generation
  * 
- * Hybrid search: embedding similarity (if available) + keyword fallback.
- * Indexes personality, memory, and knowledge files.
- * Embedding vectors cached to SQLite for fast restarts.
+ * Storage: LanceDB (embedded vector database, IVF-PQ indexed)
+ * Search: Hybrid (vector similarity + keyword RRF fusion)
+ * Fallback: Keyword-only if embeddings unavailable
+ * 
+ * Each instance gets its own LanceDB at <instanceDir>/lancedb/
  */
-import { readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+
+const TABLE_NAME = 'rag_chunks';
 
 export class RAGEngine {
   /**
@@ -17,33 +21,36 @@ export class RAGEngine {
   constructor(instanceDir, opts = {}) {
     this.dir = instanceDir;
     this.embedder = opts.embedder || null;
-    /** @type {Array<{content: string, source: string, tokens: number, hash: string, embedding: Float32Array|null}>} */
-    this.chunks = [];
-    this.initialized = false;
     this.useEmbeddings = false;
 
-    // Embedding cache path
-    this._cachePath = join(instanceDir, '.rag-cache.json');
-    /** @type {Map<string, number[]>} hash → embedding array */
-    this._embeddingCache = new Map();
+    // LanceDB
+    this._dbPath = join(instanceDir, 'lancedb');
+    /** @type {any} */ this._db = null;
+    /** @type {any} */ this._table = null;
+    this._lanceReady = false;
+
+    // In-memory chunks (always maintained for keyword fallback)
+    /** @type {Array<{content: string, source: string, tokens: number, hash: string}>} */
+    this.chunks = [];
+    this.initialized = false;
   }
 
   /**
-   * Initialize: index files, compute embeddings if available
+   * Initialize: index files, setup LanceDB, compute embeddings
    */
   async initialize() {
-    this._loadCache();
     this._indexFiles();
 
-    // Try to initialize embeddings
+    // Try LanceDB + embeddings
     if (this.embedder) {
       try {
         await this.embedder.initialize();
+        await this._initLanceDB();
+        await this._syncToLance();
         this.useEmbeddings = true;
-        await this._computeEmbeddings();
-        console.log(`[RAG] Embedding mode active (${this.embedder.dimensions}d, ${this.chunks.length} chunks)`);
+        console.log(`[RAG] LanceDB ready (${this.embedder.dimensions}d, ${this.chunks.length} chunks)`);
       } catch (e) {
-        console.warn(`[RAG] Embedding init failed, using keyword fallback: ${e.message}`);
+        console.warn(`[RAG] LanceDB/embedding init failed, keyword fallback: ${e.message}`);
         this.useEmbeddings = false;
       }
     }
@@ -51,21 +58,87 @@ export class RAGEngine {
     this.initialized = true;
   }
 
-  /**
-   * Sync initialize (keyword-only, no embeddings — backward compat)
-   */
+  /** Sync-only init (keyword fallback, no embeddings) */
   initializeSync() {
-    this._loadCache();
     this._indexFiles();
     this.initialized = true;
   }
 
-  // --- Indexing ---
+  // ========== LanceDB Setup ==========
+
+  async _initLanceDB() {
+    const lancedb = await import('@lancedb/lancedb');
+    this._db = await lancedb.connect(this._dbPath);
+    const tables = await this._db.tableNames();
+
+    if (tables.includes(TABLE_NAME)) {
+      this._table = await this._db.openTable(TABLE_NAME);
+    }
+    // Table created in _syncToLance if needed
+
+    this._lanceReady = true;
+  }
+
+  /**
+   * Sync in-memory chunks to LanceDB. 
+   * Only embeds chunks that are new/changed (by hash).
+   */
+  async _syncToLance() {
+    if (!this._db || !this.embedder) return;
+    if (!this.chunks.length) return;
+
+    // Get existing hashes from LanceDB
+    const existingHashes = new Set();
+    if (this._table) {
+      try {
+        const rows = await this._table.query().select(['hash']).toArray();
+        for (const r of rows) existingHashes.add(r.hash);
+      } catch {}
+    }
+
+    // Find new chunks
+    const newChunks = this.chunks.filter(c => !existingHashes.has(c.hash));
+    if (!newChunks.length && this._table) return;
+
+    // Embed new chunks
+    if (newChunks.length) {
+      console.log(`[RAG] Embedding ${newChunks.length} new chunks...`);
+      const texts = newChunks.map(c => c.content);
+      const embeddings = await this.embedder.embedBatch(texts);
+
+      const rows = newChunks.map((c, i) => ({
+        hash: c.hash,
+        content: c.content,
+        source: c.source,
+        tokens: c.tokens,
+        vector: Array.from(embeddings[i]),
+      }));
+
+      if (!this._table) {
+        // Create table with first batch
+        this._table = await this._db.createTable(TABLE_NAME, rows);
+      } else {
+        await this._table.add(rows);
+      }
+      console.log(`[RAG] Synced ${newChunks.length} chunks to LanceDB`);
+    }
+
+    // Clean stale entries (hashes in Lance but not in current chunks)
+    const currentHashes = new Set(this.chunks.map(c => c.hash));
+    const staleHashes = [...existingHashes].filter(h => !currentHashes.has(h));
+    if (staleHashes.length && this._table) {
+      for (const h of staleHashes) {
+        try { await this._table.delete(`hash = '${h}'`); } catch {}
+      }
+      console.log(`[RAG] Cleaned ${staleHashes.length} stale chunks`);
+    }
+  }
+
+  // ========== File Indexing ==========
 
   _indexFiles() {
     this.chunks = [];
 
-    // Personality files (MY_RULES is RAG-eligible, SOUL.md always in prompt)
     const ragFiles = ['MY_RULES.md', 'MEMORY.md'];
     for (const file of ragFiles) {
       const p = join(this.dir, file);
@@ -93,11 +166,9 @@ export class RAGEngine {
         for (const f of facts) {
           const content = `[${f.tags?.join(', ')}] ${f.fact}`;
           this.chunks.push({
-            content,
-            source: 'knowledge',
+            content, source: 'knowledge',
             tokens: Math.ceil(content.length / 4),
             hash: this._hash(content),
-            embedding: null,
           });
         }
       } catch {}
@@ -128,44 +199,17 @@ export class RAGEngine {
   }
 
   _pushChunk(source, content) {
-    const hash = this._hash(content);
-    const cachedEmb = this._embeddingCache.get(hash);
     this.chunks.push({
-      content,
-      source,
+      content, source,
       tokens: Math.ceil(content.length / 4),
-      hash,
-      embedding: cachedEmb ? new Float32Array(cachedEmb) : null,
+      hash: this._hash(content),
     });
   }
 
-  // --- Embedding computation ---
-
-  async _computeEmbeddings() {
-    if (!this.embedder || !this.useEmbeddings) return;
-
-    // Find chunks without embeddings
-    const needEmbed = this.chunks.filter(c => !c.embedding);
-    if (!needEmbed.length) return;
-
-    console.log(`[RAG] Computing embeddings for ${needEmbed.length}/${this.chunks.length} chunks...`);
-
-    const texts = needEmbed.map(c => c.content);
-    const embeddings = await this.embedder.embedBatch(texts);
-
-    for (let i = 0; i < needEmbed.length; i++) {
-      needEmbed[i].embedding = embeddings[i];
-      this._embeddingCache.set(needEmbed[i].hash, Array.from(embeddings[i]));
-    }
-
-    this._saveCache();
-    console.log(`[RAG] Embeddings computed and cached`);
-  }
-
-  // --- Search ---
+  // ========== Search ==========
 
   /**
-   * Search for relevant chunks
+   * Hybrid search: vector (LanceDB) + keyword, merged via RRF
    * @param {string} query
    * @param {number} topK
    * @returns {Promise<Array<{content: string, source: string, score: number}>>}
@@ -173,33 +217,28 @@ export class RAGEngine {
   async search(query, topK = 5) {
     if (!this.chunks.length) return [];
 
-    // Hybrid search: embedding + keyword, merge results
-    if (this.useEmbeddings && this.embedder) {
+    if (this.useEmbeddings && this._table) {
       return this._hybridSearch(query, topK);
     }
-
     return this._keywordSearch(query, topK);
   }
 
-  /**
-   * Sync keyword-only search (backward compat)
-   */
+  /** Sync keyword-only search */
   searchSync(query, topK = 5) {
     return this._keywordSearch(query, topK);
   }
 
   async _hybridSearch(query, topK) {
-    const [embResults, kwResults] = await Promise.all([
-      this._embeddingSearch(query, topK),
+    const [vecResults, kwResults] = await Promise.all([
+      this._vectorSearch(query, topK),
       Promise.resolve(this._keywordSearch(query, topK)),
     ]);
 
-    // Merge with RRF (Reciprocal Rank Fusion)
+    // RRF (Reciprocal Rank Fusion)
     const scores = new Map();
-    const k = 60; // RRF constant
-
-    for (let i = 0; i < embResults.length; i++) {
-      const key = embResults[i].content;
+    const k = 60;
+    for (let i = 0; i < vecResults.length; i++) {
+      const key = vecResults[i].content;
       scores.set(key, (scores.get(key) || 0) + 1 / (k + i + 1));
     }
     for (let i = 0; i < kwResults.length; i++) {
@@ -207,11 +246,9 @@ export class RAGEngine {
       scores.set(key, (scores.get(key) || 0) + 1 / (k + i + 1));
     }
 
-    // Build result from merged scores
-    const allResults = [...embResults, ...kwResults];
     const seen = new Set();
     const merged = [];
-    for (const r of allResults) {
+    for (const r of [...vecResults, ...kwResults]) {
       if (seen.has(r.content)) continue;
       seen.add(r.content);
       merged.push({ content: r.content, source: r.source, score: scores.get(r.content) || 0 });
@@ -220,46 +257,48 @@ export class RAGEngine {
     return merged.sort((a, b) => b.score - a.score).slice(0, topK);
   }
 
-  async _embeddingSearch(query, topK) {
-    const results = await this.embedder.findSimilar(query, this.chunks, topK);
-    return results.filter(r => r.score > 0.2); // min similarity threshold
+  async _vectorSearch(query, topK) {
+    const qVec = await this.embedder.embed(query);
+    const results = await this._table.vectorSearch(Array.from(qVec)).limit(topK).toArray();
+
+    return results
+      .map(r => ({
+        content: r.content,
+        source: r.source,
+        score: 1 / (1 + (r._distance || 0)), // L2 distance → similarity
+      }))
+      .filter(r => r.score > 0.3); // min threshold
   }
 
   _keywordSearch(query, topK) {
     const words = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
     if (!words.length) return [];
 
-    const scored = this.chunks.map(chunk => {
-      const lower = chunk.content.toLowerCase();
-      const hits = words.filter(w => lower.includes(w)).length;
-      return { content: chunk.content, source: chunk.source, score: hits / words.length };
-    });
-
-    return scored.filter(c => c.score > 0).sort((a, b) => b.score - a.score).slice(0, topK);
+    return this.chunks
+      .map(chunk => {
+        const lower = chunk.content.toLowerCase();
+        const hits = words.filter(w => lower.includes(w)).length;
+        return { content: chunk.content, source: chunk.source, score: hits / words.length };
+      })
+      .filter(c => c.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
   }
 
-  // --- Context for prompt ---
+  // ========== Context for Prompt ==========
 
   /**
-   * Get RAG context for system prompt injection
    * @param {string} query
    * @param {number} maxChars
    * @returns {string|Promise<string>}
    */
   getContextForPrompt(query, maxChars = 2000) {
-    if (this.useEmbeddings) {
-      return this._getContextAsync(query, maxChars);
-    }
-    return this._getContextSync(query, maxChars);
+    if (this.useEmbeddings) return this._getContextAsync(query, maxChars);
+    return this._formatContext(this._keywordSearch(query, 5), maxChars);
   }
 
   async _getContextAsync(query, maxChars) {
     const results = await this.search(query, 5);
-    return this._formatContext(results, maxChars);
-  }
-
-  _getContextSync(query, maxChars) {
-    const results = this._keywordSearch(query, 5);
     return this._formatContext(results, maxChars);
   }
 
@@ -275,30 +314,21 @@ export class RAGEngine {
     return ctx;
   }
 
-  // --- Cache management ---
+  // ========== Reindex ==========
 
-  _loadCache() {
-    try {
-      if (existsSync(this._cachePath)) {
-        const data = JSON.parse(readFileSync(this._cachePath, 'utf-8'));
-        for (const [hash, emb] of Object.entries(data)) {
-          this._embeddingCache.set(hash, emb);
-        }
-        console.log(`[RAG] Loaded ${this._embeddingCache.size} cached embeddings`);
-      }
-    } catch {}
-  }
-
-  _saveCache() {
-    try {
-      const obj = Object.fromEntries(this._embeddingCache);
-      writeFileSync(this._cachePath, JSON.stringify(obj));
-    } catch (e) {
-      console.warn(`[RAG] Cache save failed: ${e.message}`);
+  async reindex() {
+    this._indexFiles();
+    if (this.useEmbeddings && this._db) {
+      await this._syncToLance();
     }
   }
 
-  /** Simple hash for content dedup */
+  reindexSync() {
+    this._indexFiles();
+  }
+
+  // ========== Utils ==========
+
   _hash(text) {
     let h = 0;
     for (let i = 0; i < text.length; i++) {
@@ -307,31 +337,14 @@ export class RAGEngine {
     return h.toString(36);
   }
 
-  // --- Reindex ---
-
-  async reindex() {
-    this._indexFiles();
-    if (this.useEmbeddings) {
-      await this._computeEmbeddings();
-    }
-  }
-
-  /** Sync reindex (keyword only) */
-  reindexSync() {
-    this._indexFiles();
-  }
-
-  // --- Stats ---
-
   getStats() {
-    const withEmb = this.chunks.filter(c => c.embedding).length;
     return {
       totalChunks: this.chunks.length,
-      embeddedChunks: withEmb,
-      cachedEmbeddings: this._embeddingCache.size,
       useEmbeddings: this.useEmbeddings,
+      lanceReady: this._lanceReady,
       dimensions: this.embedder?.dimensions || null,
-      provider: this.embedder ? (this.useEmbeddings ? this.embedder.provider : 'fallback-keyword') : 'keyword-only',
+      provider: this.embedder ? (this.useEmbeddings ? `${this.embedder.provider} + LanceDB` : 'fallback-keyword') : 'keyword-only',
+      model: this.embedder?.localModel || this.embedder?.apiModel || null,
     };
   }
 }

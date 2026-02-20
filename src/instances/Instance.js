@@ -120,7 +120,7 @@ export class Instance {
         this.rag = new RAGEngine(this.dataDir, { embedder });
         await this.rag.initialize();
         const stats = this.rag.getStats();
-        console.log(`[Instance:${this.id}] RAG initialized (${stats.totalChunks} chunks, ${stats.embeddedChunks} embedded, provider: ${stats.provider})`);
+        console.log(`[Instance:${this.id}] RAG initialized (${stats.totalChunks} chunks, ${stats.provider}, ${stats.model || 'n/a'})`);
       } catch (e) { console.error(`[Instance:${this.id}] RAG error:`, e.message); }
     }
 

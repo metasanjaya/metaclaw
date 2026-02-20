@@ -1,25 +1,25 @@
 /**
  * EmbeddingManager — Multi-provider embedding support
  * 
- * Providers (priority order):
+ * Providers:
  * 1. local    — @xenova/transformers (zero-cost, no API key)
  * 2. api      — OpenAI-compatible /v1/embeddings endpoint
  * 
  * Config in instance config.yaml:
  *   embedding:
  *     provider: local | api
- *     model: all-MiniLM-L6-v2          # local model name
+ *     model: Xenova/bge-m3             # local model name (default)
  *     api_url: https://api.example.com  # for api provider
  *     api_key: sk-...                   # for api provider
  *     api_model: text-embedding-3-small # for api provider
- *     dimensions: 384                   # optional, override dims
+ *     dimensions: 1024                  # auto-detected if omitted
  */
 
 export class EmbeddingManager {
   /**
    * @param {Object} config
-   * @param {string} [config.provider='local'] — 'local' | 'api'
-   * @param {string} [config.model='Xenova/all-MiniLM-L6-v2']
+   * @param {string} [config.provider='local']
+   * @param {string} [config.model='Xenova/bge-m3']
    * @param {string} [config.api_url]
    * @param {string} [config.api_key]
    * @param {string} [config.api_model]
@@ -27,7 +27,7 @@ export class EmbeddingManager {
    */
   constructor(config = {}) {
     this.provider = config.provider || 'local';
-    this.localModel = config.model || 'Xenova/all-MiniLM-L6-v2';
+    this.localModel = config.model || 'Xenova/bge-m3';
     this.apiUrl = config.api_url;
     this.apiKey = config.api_key;
     this.apiModel = config.api_model || 'text-embedding-3-small';
@@ -39,13 +39,9 @@ export class EmbeddingManager {
     this._initPromise = null;
   }
 
-  /**
-   * Initialize the embedding provider (lazy, call once)
-   */
   async initialize() {
     if (this._ready) return;
     if (this._initPromise) return this._initPromise;
-
     this._initPromise = this._doInit();
     await this._initPromise;
   }
@@ -55,10 +51,10 @@ export class EmbeddingManager {
       try {
         const { pipeline } = await import('@xenova/transformers');
         console.log(`[Embedding] Loading local model: ${this.localModel}...`);
-        this._pipeline = await pipeline('feature-extraction', this.localModel, {
-          quantized: true,
-        });
-        this.dimensions = this.dimensions || 384; // MiniLM default
+        this._pipeline = await pipeline('feature-extraction', this.localModel, { quantized: true });
+        // Auto-detect dimensions
+        const test = await this._localEmbed('dimension test');
+        this.dimensions = test.length;
         console.log(`[Embedding] Local model ready (${this.dimensions}d)`);
       } catch (e) {
         throw new Error(`Local embedding init failed: ${e.message}`);
@@ -67,49 +63,40 @@ export class EmbeddingManager {
       if (!this.apiUrl || !this.apiKey) {
         throw new Error('API embedding requires api_url and api_key');
       }
-      // Test with a dummy embed
-      const test = await this._apiEmbed('test');
+      const test = await this._apiEmbed('dimension test');
       this.dimensions = this.dimensions || test.length;
       console.log(`[Embedding] API provider ready (${this.apiModel}, ${this.dimensions}d)`);
     }
-
     this._ready = true;
   }
 
   /**
-   * Embed a single text string
+   * Embed a single text
    * @param {string} text
    * @returns {Promise<Float32Array>}
    */
   async embed(text) {
     if (!this._ready) await this.initialize();
-
-    if (this.provider === 'local') {
-      return this._localEmbed(text);
-    } else {
-      return this._apiEmbed(text);
-    }
+    return this.provider === 'local' ? this._localEmbed(text) : this._apiEmbed(text);
   }
 
   /**
-   * Embed multiple texts (batched)
+   * Embed multiple texts
    * @param {string[]} texts
    * @returns {Promise<Float32Array[]>}
    */
   async embedBatch(texts) {
     if (!this._ready) await this.initialize();
-
     if (this.provider === 'local') {
-      // transformers.js supports batching natively
-      return this._localEmbedBatch(texts);
-    } else {
-      // API batch (most providers support array input)
-      return this._apiEmbedBatch(texts);
+      const results = [];
+      for (const t of texts) results.push(await this._localEmbed(t));
+      return results;
     }
+    return this._apiEmbedBatch(texts);
   }
 
   /**
-   * Compute cosine similarity between two vectors
+   * Cosine similarity
    * @param {Float32Array|number[]} a
    * @param {Float32Array|number[]} b
    * @returns {number}
@@ -125,67 +112,25 @@ export class EmbeddingManager {
     return denom === 0 ? 0 : dot / denom;
   }
 
-  /**
-   * Find top-K most similar chunks to a query
-   * @param {string} query
-   * @param {Array<{content: string, embedding: Float32Array|number[], [key: string]: any}>} chunks
-   * @param {number} topK
-   * @returns {Promise<Array<{content: string, source: string, score: number}>>}
-   */
-  async findSimilar(query, chunks, topK = 3) {
-    const qEmb = await this.embed(query);
-    const scored = chunks
-      .filter(c => c.embedding)
-      .map(c => ({
-        content: c.content,
-        source: c.source,
-        score: EmbeddingManager.cosineSimilarity(qEmb, c.embedding),
-      }));
-
-    return scored.sort((a, b) => b.score - a.score).slice(0, topK);
-  }
-
-  // --- Local provider ---
+  // --- Local ---
 
   async _localEmbed(text) {
     const output = await this._pipeline(text, { pooling: 'mean', normalize: true });
     return output.data; // Float32Array
   }
 
-  async _localEmbedBatch(texts) {
-    const results = [];
-    // Process in small batches to avoid memory issues
-    const batchSize = 32;
-    for (let i = 0; i < texts.length; i += batchSize) {
-      const batch = texts.slice(i, i + batchSize);
-      for (const t of batch) {
-        results.push(await this._localEmbed(t));
-      }
-    }
-    return results;
-  }
-
-  // --- API provider (OpenAI-compatible) ---
+  // --- API (OpenAI-compatible) ---
 
   async _apiEmbed(text) {
     const res = await fetch(`${this.apiUrl}/v1/embeddings`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.apiKey}`,
-      },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.apiKey}` },
       body: JSON.stringify({
-        model: this.apiModel,
-        input: text,
+        model: this.apiModel, input: text,
         ...(this.dimensions ? { dimensions: this.dimensions } : {}),
       }),
     });
-
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Embedding API error ${res.status}: ${err}`);
-    }
-
+    if (!res.ok) throw new Error(`Embedding API ${res.status}: ${await res.text()}`);
     const json = await res.json();
     return new Float32Array(json.data[0].embedding);
   }
@@ -193,26 +138,15 @@ export class EmbeddingManager {
   async _apiEmbedBatch(texts) {
     const res = await fetch(`${this.apiUrl}/v1/embeddings`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.apiKey}`,
-      },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.apiKey}` },
       body: JSON.stringify({
-        model: this.apiModel,
-        input: texts,
+        model: this.apiModel, input: texts,
         ...(this.dimensions ? { dimensions: this.dimensions } : {}),
       }),
     });
-
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Embedding API error ${res.status}: ${err}`);
-    }
-
+    if (!res.ok) throw new Error(`Embedding API ${res.status}: ${await res.text()}`);
     const json = await res.json();
-    return json.data
-      .sort((a, b) => a.index - b.index)
-      .map(d => new Float32Array(d.embedding));
+    return json.data.sort((a, b) => a.index - b.index).map(d => new Float32Array(d.embedding));
   }
 
   get isReady() { return this._ready; }
