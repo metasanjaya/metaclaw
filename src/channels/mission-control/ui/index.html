@@ -61,12 +61,12 @@
               </div>
               <div class="agent-metrics">
                 <div class="agent-metric">📨 <span x-text="instanceStats[inst.id]?.requests || 0"></span></div>
-                <div class="agent-metric">🔤 <span x-text="formatNum((instanceStats[inst.id]?.inputTokens||0)+(instanceStats[inst.id]?.outputTokens||0))"></span></div>
+                <div class="agent-metric">💬 <span x-text="instanceStats[inst.id]?.totalMessages || 0"></span></div>
               </div>
             </div>
           </template>
 
-          <!-- System Status -->
+          <!-- System + Health combined -->
           <div class="panel-header" style="margin-top:4px;"><div class="panel-title">System</div></div>
           <div style="padding:12px 16px;">
             <div class="config-row">
@@ -78,6 +78,23 @@
             <div class="config-row"><span class="config-key">CPU</span><span class="config-val" x-text="(sysHealth.system?.cpu?.usage || 0) + '%'"></span></div>
             <div class="config-row"><span class="config-key">Uptime</span><span class="config-val" x-text="fmtUptime(sysHealth.system?.appUptime || 0)"></span></div>
             <div class="config-row"><span class="config-key">Incidents</span><span class="config-val" :style="(sysHealth.incidents?.active||0) > 0 ? 'color:var(--red)' : ''" x-text="(sysHealth.incidents?.active||0) + ' active'"></span></div>
+          </div>
+
+          <!-- Health (channels + instances) -->
+          <div class="panel-header"><div class="panel-title">Health</div></div>
+          <div style="padding:8px 16px;">
+            <template x-for="(health, id) in (sysHealth.channels || {})" :key="id">
+              <div style="display:flex;align-items:center;gap:6px;padding:4px 0;font-size:11px;">
+                <div class="dot" :class="health.status==='healthy' ? 'dot-green' : 'dot-red'" style="width:6px;height:6px;"></div>
+                <span style="color:var(--text2);" x-text="id"></span>
+              </div>
+            </template>
+            <template x-for="(health, id) in (sysHealth.instances || {})" :key="id">
+              <div style="display:flex;align-items:center;gap:6px;padding:4px 0;font-size:11px;">
+                <div class="dot" :class="health.status==='healthy' ? 'dot-green' : 'dot-red'" style="width:6px;height:6px;"></div>
+                <span style="color:var(--text2);" x-text="id"></span>
+              </div>
+            </template>
           </div>
         </div>
 
@@ -131,7 +148,7 @@
             </div>
           </div>
 
-          <!-- Conversations + Instance Details -->
+          <!-- Quick Chat + Instance Details -->
           <div class="grid-2">
             <div class="card">
               <div class="card-title"><span class="icon">💬</span> Quick Chat</div>
@@ -142,7 +159,7 @@
                     <div style="font-size:12px;font-weight:600;" x-text="inst.name"></div>
                     <div style="font-size:10px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" x-text="lastMessages[inst.id] || 'Start a conversation →'"></div>
                   </div>
-                  <span style="font-size:18px;">→</span>
+                  <span style="font-size:14px;color:var(--text2);">→</span>
                 </div>
               </template>
             </div>
@@ -159,6 +176,45 @@
                   <div style="font-size:10px;color:var(--text2);" x-text="'Channels: ' + (inst.channels?.join(', ') || 'none')"></div>
                 </div>
               </template>
+            </div>
+          </div>
+
+          <!-- Task Board -->
+          <div class="card">
+            <div class="card-title"><span class="icon">📋</span> Task Board</div>
+            <div class="task-columns">
+              <div class="task-col">
+                <div class="task-col-header"><div class="dot dot-yellow" style="width:6px;height:6px;"></div> Queue <span class="task-col-count" x-text="tasks.filter(t=>t.status==='queue').length">0</span></div>
+                <template x-for="task in tasks.filter(t=>t.status==='queue')" :key="task.id">
+                  <div class="task-item">
+                    <div class="task-priority" :class="'priority-'+task.priority" x-text="task.priority"></div>
+                    <div class="task-item-title" x-text="task.title"></div>
+                    <div class="task-item-agent" x-text="task.agent || ''"></div>
+                  </div>
+                </template>
+                <div x-show="tasks.filter(t=>t.status==='queue').length===0" style="font-size:11px;color:var(--text2);padding:8px;text-align:center;">Empty</div>
+              </div>
+              <div class="task-col">
+                <div class="task-col-header"><div class="dot dot-green" style="width:6px;height:6px;"></div> In Progress <span class="task-col-count" x-text="tasks.filter(t=>t.status==='active').length">0</span></div>
+                <template x-for="task in tasks.filter(t=>t.status==='active')" :key="task.id">
+                  <div class="task-item">
+                    <div class="task-priority" :class="'priority-'+task.priority" x-text="task.priority"></div>
+                    <div class="task-item-title" x-text="task.title"></div>
+                    <div class="task-item-agent" x-text="task.agent || ''"></div>
+                  </div>
+                </template>
+                <div x-show="tasks.filter(t=>t.status==='active').length===0" style="font-size:11px;color:var(--text2);padding:8px;text-align:center;">Empty</div>
+              </div>
+              <div class="task-col">
+                <div class="task-col-header">✅ Done <span class="task-col-count" x-text="tasks.filter(t=>t.status==='done').length">0</span></div>
+                <template x-for="task in tasks.filter(t=>t.status==='done').slice(-5)" :key="task.id">
+                  <div class="task-item" style="opacity:0.7;">
+                    <div class="task-item-title" x-text="task.title"></div>
+                    <div class="task-item-agent" x-text="task.agent || ''"></div>
+                  </div>
+                </template>
+                <div x-show="tasks.filter(t=>t.status==='done').length===0" style="font-size:11px;color:var(--text2);padding:8px;text-align:center;">Empty</div>
+              </div>
             </div>
           </div>
         </div>
@@ -453,14 +509,6 @@ function dashboardPage() {
       if (h < 24) return h + 'h ' + Math.floor((s%3600)/60) + 'm';
       return Math.floor(h/24) + 'd ' + (h%24) + 'h';
     },
-    get filteredFeed() {
-      const f = this.feed || this.$data?.feed || [];
-      if (this.feedTab === 'All' || this.$data?.feedTab === 'All') return f;
-      const tab = this.feedTab || this.$data?.feedTab || 'All';
-      if (tab === 'System') return f.filter(e => e.agent === 'System' || e.text?.includes('health') || e.text?.includes('instance'));
-      if (tab === 'Chat') return f.filter(e => e.text?.includes('chat') || e.text?.includes('message'));
-      return f;
-    },
   };
 }
 
@@ -509,7 +557,7 @@ function app() {
     })(),
     connected: false, ws: null,
     instances: [], instanceStats: {},
-    feed: [], feedTab: 'All',
+    feed: [], feedTab: 'All', tasks: [],
     // Chat
     chatInstanceId: null, currentInstance: null,
     chatMessages: [], chatInput: '', chatTyping: false, chatSearch: '',
@@ -527,6 +575,12 @@ function app() {
       if (!this.chatSearch) return this.instances;
       const q = this.chatSearch.toLowerCase();
       return this.instances.filter(i => i.name.toLowerCase().includes(q) || i.id.includes(q));
+    },
+    get filteredFeed() {
+      if (this.feedTab === 'All') return this.feed;
+      if (this.feedTab === 'System') return this.feed.filter(e => e.category === 'system');
+      if (this.feedTab === 'Chat') return this.feed.filter(e => e.category === 'chat');
+      return this.feed;
     },
     get totalRequests() { return Object.values(this.instanceStats).reduce((a,s) => a + (s.requests||0), 0); },
     get totalInputTokens() { return Object.values(this.instanceStats).reduce((a,s) => a + (s.inputTokens||0), 0); },
@@ -600,14 +654,11 @@ function app() {
         this.$nextTick(() => this.scrollChat());
       } else if (msg.type === 'event') {
         const evt = msg.data || {};
-        this.feed.unshift({
-          agent: evt.id || evt.instanceId || 'System',
-          initial: (evt.id || 'S')[0].toUpperCase(),
-          text: msg.event + ': ' + (evt.name || evt.message || JSON.stringify(evt).slice(0,100)),
-          time: this.fmtTime(Date.now()),
-          color: msg.event?.includes('crash') ? 'var(--red)' : msg.event?.includes('spawn') ? 'var(--green)' : 'var(--accent)',
-        });
-        if (this.feed.length > 100) this.feed.pop();
+        const feedItem = this._formatFeedEvent(msg.event, evt);
+        if (feedItem) {
+          this.feed.unshift(feedItem);
+          if (this.feed.length > 100) this.feed.pop();
+        }
         if (msg.event?.startsWith('instance.')) {
           fetch('/api/instances').then(r => r.json()).then(d => this.instances = d).catch(() => {});
         }
@@ -652,6 +703,52 @@ function app() {
         const res = await fetch('/api/stats');
         this.instanceStats = await res.json();
       } catch {}
+    },
+
+    _formatFeedEvent(event, data) {
+      const time = this.fmtTime(Date.now());
+      const map = {
+        'health.check': () => {
+          // Only show unhealthy checks, skip routine healthy ones
+          const results = data.results || {};
+          const unhealthy = Object.entries(results).filter(([, h]) => h.status !== 'healthy');
+          if (unhealthy.length === 0) return null;
+          const statuses = unhealthy.map(([id, h]) => `❌ ${id}`).join(', ');
+          return { agent: 'Doctor', initial: '🩺', text: `Issue detected: ${statuses}`, time, color: 'var(--yellow)', category: 'system' };
+        },
+        'health.incident': () => ({
+          agent: 'Doctor', initial: '🚨', text: `Incident: ${data.description || data.type}`, time, color: 'var(--red)', category: 'system'
+        }),
+        'doctor.incident': () => ({
+          agent: 'Doctor', initial: '🚨', text: `${data.type}: ${data.description || ''}`, time, color: 'var(--red)', category: 'system'
+        }),
+        'doctor.resolved': () => ({
+          agent: 'Doctor', initial: '✅', text: `Resolved: ${data.type} (${data.module})`, time, color: 'var(--green)', category: 'system'
+        }),
+        'instance.spawn': () => ({
+          agent: data.name || data.id, initial: data.emoji || '🤖', text: `Instance started`, time, color: 'var(--green)', category: 'system'
+        }),
+        'instance.stop': () => ({
+          agent: data.name || data.id, initial: '⏹', text: `Instance stopped`, time, color: 'var(--yellow)', category: 'system'
+        }),
+        'instance.crash': () => ({
+          agent: data.name || data.id, initial: '💥', text: `Instance crashed: ${data.error || ''}`, time, color: 'var(--red)', category: 'system'
+        }),
+        'message.in': () => ({
+          agent: data.senderId || 'User', initial: '💬', text: `Message in ${data.channelId}: "${(data.text||'').slice(0,60)}"`, time, color: 'var(--accent)', category: 'chat'
+        }),
+        'message.out': () => ({
+          agent: data.channelId || 'Channel', initial: '📤', text: `Reply sent to ${data.chatId}`, time, color: 'var(--purple)', category: 'chat'
+        }),
+        'instance.response': () => ({
+          agent: data.instanceId || '?', initial: '🤖', text: `Responded (${data.model?.split('/').pop() || '?'})`, time, color: 'var(--accent)', category: 'chat'
+        }),
+      };
+      const fn = map[event];
+      if (fn) return fn();
+      // Skip unknown events
+      if (!event) return null;
+      return { agent: 'System', initial: 'S', text: `${event}`, time, color: 'var(--text2)', category: 'system' };
     },
 
     renderMd(text) { try { return marked.parse(text || ''); } catch { return text; } },
