@@ -34,12 +34,14 @@ export class Scheduler {
    * @param {import('../core/Router.js').Router} [opts.router]
    * @param {Function} [opts.sendFn]
    */
-  constructor({ instanceDir, instanceId, eventBus, router, sendFn }) {
+  constructor({ instanceDir, instanceId, eventBus, router, sendFn, timezone }) {
     this.dir = instanceDir;
     this.instanceId = instanceId;
     this.eventBus = eventBus;
     this.router = router;
     this.sendFn = sendFn || null;
+    /** Default timezone from instance config */
+    this.timezone = timezone || process.env.TZ || null;
     this._filePath = join(instanceDir, 'schedules.json');
 
     /** @type {Array<Object>} */
@@ -190,7 +192,8 @@ export class Scheduler {
   _setupCron(job) {
     if (this._cronInstances.has(job.id)) return;
     try {
-      const cronOpts = job.schedule.tz ? { timezone: job.schedule.tz } : {};
+      const tz = job.schedule.tz || this.timezone;
+      const cronOpts = tz ? { timezone: tz } : {};
       const cron = new Cron(job.schedule.cron, cronOpts, () => {
         // Update triggerAt on each cron tick
         job.triggerAt = Date.now();
@@ -342,7 +345,7 @@ export class Scheduler {
   /** Convert legacy flat params to schedule object */
   _normalizeSchedule(opts) {
     if (opts.cron) {
-      return { kind: 'cron', cron: opts.cron, tz: opts.tz || opts.timezone || null };
+      return { kind: 'cron', cron: opts.cron, tz: opts.tz || opts.timezone || this.timezone };
     }
     if (opts.repeatMs || opts.everyMs) {
       return { kind: 'every', everyMs: opts.repeatMs || opts.everyMs };
@@ -361,7 +364,8 @@ export class Scheduler {
     }
     if (schedule.kind === 'cron') {
       try {
-        const opts = schedule.tz ? { timezone: schedule.tz } : {};
+        const tz = schedule.tz || this.timezone;
+        const opts = tz ? { timezone: tz } : {};
         const cron = new Cron(schedule.cron, opts);
         const next = cron.nextRun();
         cron.stop();
@@ -391,7 +395,10 @@ export class Scheduler {
   _describeSchedule(schedule) {
     if (schedule.kind === 'at') return `at ${new Date(schedule.at).toISOString()}`;
     if (schedule.kind === 'every') return `every ${this._fmtMs(schedule.everyMs)}`;
-    if (schedule.kind === 'cron') return `cron "${schedule.cron}"${schedule.tz ? ` (${schedule.tz})` : ''}`;
+    if (schedule.kind === 'cron') {
+      const tz = schedule.tz || this.timezone;
+      return `cron "${schedule.cron}"${tz ? ` (${tz})` : ''}`;
+    }
     return 'unknown';
   }
 

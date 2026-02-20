@@ -180,6 +180,7 @@ export class Instance {
         this.scheduler = new Scheduler({
           instanceDir: this.dataDir, instanceId: this.id,
           eventBus: this.eventBus, router: this.router,
+          timezone: this.config.timezone,
         });
         this.scheduler.start();
         console.log(`[Instance:${this.id}] Scheduler initialized (${this.scheduler.getStats().totalJobs} jobs)`);
