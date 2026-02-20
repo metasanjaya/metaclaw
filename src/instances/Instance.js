@@ -10,6 +10,7 @@ import { LessonLearner } from './LessonLearner.js';
 import { Scheduler } from './Scheduler.js';
 import { SessionSpawner } from './SessionSpawner.js';
 import { BackgroundTracker } from './BackgroundTracker.js';
+import { DebugLogger } from './DebugLogger.js';
 import { EmbeddingManager } from '../ai/EmbeddingManager.js';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
