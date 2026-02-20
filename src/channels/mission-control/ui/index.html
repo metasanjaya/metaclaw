@@ -42,76 +42,123 @@
 
     <!-- ========== DASHBOARD ========== -->
     <template x-if="page==='dashboard'">
-      <div class="dashboard-layout">
+      <div class="dashboard-layout" x-data="dashboardPage()" x-init="startPolling()">
         <!-- Left: Instances -->
         <div class="panel-left">
           <div class="panel-header">
             <div class="panel-title">Instances</div>
-            <div class="badge" x-text="instances.length">0</div>
+            <div class="badge" x-text="$data.instances?.length || instances.length">0</div>
           </div>
           <template x-for="(inst, i) in instances" :key="inst.id">
             <div class="agent-card" @click="page='chat'; selectInstance(inst.id)">
               <div class="agent-top">
                 <div class="agent-avatar" :style="'background:' + avatarColors[i % avatarColors.length]" x-text="inst.emoji || inst.name[0]"></div>
-                <div>
+                <div style="flex:1;min-width:0;">
                   <div class="agent-name" x-text="inst.name"></div>
                   <div class="agent-role" x-text="inst.model?.split('/').pop() || ''"></div>
                 </div>
-              </div>
-              <div class="agent-status">
                 <div class="dot" :class="inst.status === 'running' ? 'dot-green' : 'dot-red'"></div>
-                <span x-text="inst.status"></span>
               </div>
               <div class="agent-metrics">
-                <div class="agent-metric">Requests: <span x-text="instanceStats[inst.id]?.requests || 0"></span></div>
-                <div class="agent-metric">Tokens: <span x-text="formatNum(instanceStats[inst.id]?.outputTokens || 0)"></span></div>
+                <div class="agent-metric">📨 <span x-text="instanceStats[inst.id]?.requests || 0"></span></div>
+                <div class="agent-metric">🔤 <span x-text="formatNum((instanceStats[inst.id]?.inputTokens||0)+(instanceStats[inst.id]?.outputTokens||0))"></span></div>
               </div>
             </div>
           </template>
-          <div class="add-instance">+ Add Instance</div>
-          <div class="panel-header" style="margin-top:8px;"><div class="panel-title">System</div></div>
+
+          <!-- System Status -->
+          <div class="panel-header" style="margin-top:4px;"><div class="panel-title">System</div></div>
           <div style="padding:12px 16px;">
-            <div class="config-row"><span class="config-key">WebSocket</span><span class="config-val" :style="'color:' + (connected ? 'var(--green)' : 'var(--red)')" x-text="connected ? '● Connected' : '● Offline'"></span></div>
-            <div class="config-row"><span class="config-key">Instances</span><span class="config-val" x-text="instances.length + ' loaded'"></span></div>
-            <div class="config-row"><span class="config-key">Doctor</span><span class="config-val" style="color:var(--green)">● Active</span></div>
+            <div class="config-row">
+              <span class="config-key">Status</span>
+              <span class="config-val" :style="'color:' + (sysHealth.overall==='healthy'?'var(--green)':'var(--yellow)')" x-text="sysHealth.overall || 'loading...'"></span>
+            </div>
+            <div class="config-row"><span class="config-key">WebSocket</span><span class="config-val" :style="'color:' + (connected ? 'var(--green)' : 'var(--red)')" x-text="connected ? '● Online' : '● Offline'"></span></div>
+            <div class="config-row"><span class="config-key">Memory</span><span class="config-val" x-text="(sysHealth.system?.memory?.pct || 0) + '%'"></span></div>
+            <div class="config-row"><span class="config-key">CPU</span><span class="config-val" x-text="(sysHealth.system?.cpu?.usage || 0) + '%'"></span></div>
+            <div class="config-row"><span class="config-key">Uptime</span><span class="config-val" x-text="fmtUptime(sysHealth.system?.appUptime || 0)"></span></div>
+            <div class="config-row"><span class="config-key">Incidents</span><span class="config-val" :style="(sysHealth.incidents?.active||0) > 0 ? 'color:var(--red)' : ''" x-text="(sysHealth.incidents?.active||0) + ' active'"></span></div>
           </div>
         </div>
 
         <!-- Center: Dashboard -->
         <div class="panel-center">
+          <!-- Quick Stats Row -->
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;">
+            <div class="stat-card">
+              <div class="stat-label">Total Requests</div>
+              <div class="stat-value" x-text="totalRequests"></div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Input Tokens</div>
+              <div class="stat-value" x-text="formatNum(totalInputTokens)"></div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Output Tokens</div>
+              <div class="stat-value" x-text="formatNum(totalOutputTokens)"></div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Channels</div>
+              <div class="stat-value" x-text="Object.keys(sysHealth.channels || {}).length"></div>
+            </div>
+          </div>
+
+          <!-- Token Usage + Channels -->
           <div class="grid-2">
             <div class="card">
-              <div class="card-title"><span class="icon">📊</span> Token Usage (Today)</div>
+              <div class="card-title"><span class="icon">📊</span> Token Usage</div>
               <template x-for="(inst, i) in instances" :key="inst.id">
-                <div>
-                  <div class="token-row"><span class="token-model" x-text="inst.name"></span><span class="token-value" x-text="formatNum((instanceStats[inst.id]?.inputTokens||0)+(instanceStats[inst.id]?.outputTokens||0))"></span></div>
+                <div style="margin-bottom:10px;">
+                  <div class="token-row"><span class="token-model" x-text="inst.emoji + ' ' + inst.name"></span><span class="token-value" x-text="formatNum((instanceStats[inst.id]?.inputTokens||0)+(instanceStats[inst.id]?.outputTokens||0))"></span></div>
                   <div class="token-bar"><div class="token-fill" :style="'width:' + Math.min(100, ((instanceStats[inst.id]?.inputTokens||0)+(instanceStats[inst.id]?.outputTokens||0))/50000*100) + '%;background:' + tokenColors[i % tokenColors.length]"></div></div>
+                  <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text2);">
+                    <span>In: <span x-text="formatNum(instanceStats[inst.id]?.inputTokens||0)"></span></span>
+                    <span>Out: <span x-text="formatNum(instanceStats[inst.id]?.outputTokens||0)"></span></span>
+                  </div>
                 </div>
               </template>
             </div>
             <div class="card">
-              <div class="card-title"><span class="icon">💰</span> Cost Summary</div>
-              <div class="token-row" style="margin-bottom:8px;"><span class="token-model">Total Requests</span><span class="token-value" x-text="totalRequests"></span></div>
-              <div class="token-row" style="margin-bottom:8px;"><span class="token-model">Total Input Tokens</span><span class="token-value" x-text="formatNum(totalInputTokens)"></span></div>
-              <div class="token-row"><span class="token-model">Total Output Tokens</span><span class="token-value" x-text="formatNum(totalOutputTokens)"></span></div>
+              <div class="card-title"><span class="icon">📡</span> Channels</div>
+              <template x-for="(health, id) in (sysHealth.channels || {})" :key="id">
+                <div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);">
+                  <div class="dot" :class="health.status==='healthy' ? 'dot-green' : 'dot-red'"></div>
+                  <span style="font-size:13px;font-weight:500;" x-text="id"></span>
+                  <span style="margin-left:auto;font-size:11px;color:var(--text2);" x-text="health.message?.split(':').pop()?.trim() || health.status"></span>
+                </div>
+              </template>
+              <div x-show="!sysHealth.channels || Object.keys(sysHealth.channels).length===0" style="font-size:12px;color:var(--text2);padding:8px 0;">Loading...</div>
             </div>
           </div>
-          <div class="card" style="margin-bottom:16px;">
-            <div class="card-title"><span class="icon">📋</span> Task Board</div>
-            <div class="task-columns">
-              <div class="task-col"><div class="task-col-header"><div class="dot dot-yellow" style="width:6px;height:6px;"></div> Queue <span class="task-col-count">0</span></div></div>
-              <div class="task-col"><div class="task-col-header"><div class="dot dot-green" style="width:6px;height:6px;"></div> In Progress <span class="task-col-count">0</span></div></div>
-              <div class="task-col"><div class="task-col-header">✓ Done <span class="task-col-count">0</span></div></div>
-            </div>
-          </div>
+
+          <!-- Conversations + Instance Details -->
           <div class="grid-2">
             <div class="card">
-              <div class="card-title"><span class="icon">💬</span> Active Conversations</div>
-              <div style="font-size:12px;color:var(--text2);">Click an instance to start chatting</div>
+              <div class="card-title"><span class="icon">💬</span> Quick Chat</div>
+              <template x-for="(inst, i) in instances" :key="inst.id">
+                <div class="quick-chat-row" @click="page='chat'; selectInstance(inst.id)">
+                  <div class="chat-avatar" style="width:32px;height:32px;font-size:14px;border-radius:8px;" :style="'background:' + avatarColors[i % avatarColors.length]" x-text="inst.emoji || inst.name[0]"></div>
+                  <div style="flex:1;min-width:0;">
+                    <div style="font-size:12px;font-weight:600;" x-text="inst.name"></div>
+                    <div style="font-size:10px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" x-text="lastMessages[inst.id] || 'Start a conversation →'"></div>
+                  </div>
+                  <span style="font-size:18px;">→</span>
+                </div>
+              </template>
             </div>
             <div class="card">
-              <div class="card-title"><span class="icon">🧠</span> Memory & Knowledge</div>
-              <div class="knowledge-stat"><span>Instances</span><span class="kv" x-text="instances.length"></span></div>
+              <div class="card-title"><span class="icon">🤖</span> Instance Details</div>
+              <template x-for="inst in instances" :key="inst.id">
+                <div style="padding:6px 0;border-bottom:1px solid var(--border);">
+                  <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+                    <span style="font-size:14px;" x-text="inst.emoji"></span>
+                    <span style="font-size:12px;font-weight:600;" x-text="inst.name"></span>
+                    <span style="margin-left:auto;font-size:10px;padding:2px 8px;border-radius:4px;" :style="inst.status==='running'?'background:rgba(34,197,94,0.15);color:var(--green)':'background:rgba(239,68,68,0.15);color:var(--red)'" x-text="inst.status"></span>
+                  </div>
+                  <div style="font-size:10px;color:var(--text2);" x-text="inst.model || 'no model'"></div>
+                  <div style="font-size:10px;color:var(--text2);" x-text="'Channels: ' + (inst.channels?.join(', ') || 'none')"></div>
+                </div>
+              </template>
             </div>
           </div>
         </div>
@@ -123,12 +170,12 @@
             <div class="badge" style="background:var(--green);">Live</div>
           </div>
           <div class="tabs">
-            <template x-for="tab in ['All','Tasks','Errors','Comms']" :key="tab">
+            <template x-for="tab in ['All','System','Chat']" :key="tab">
               <div class="tab" :class="feedTab === tab ? 'active' : ''" @click="feedTab = tab" x-text="tab"></div>
             </template>
           </div>
-          <div style="overflow-y:auto;">
-            <template x-for="(evt, i) in feed" :key="i">
+          <div style="overflow-y:auto;flex:1;">
+            <template x-for="(evt, i) in filteredFeed" :key="i">
               <div class="feed-item">
                 <div class="feed-top">
                   <div class="feed-dot" :style="'background:' + (evt.color || 'var(--accent)')" x-text="evt.initial"></div>
@@ -138,7 +185,10 @@
                 <div class="feed-text" x-text="evt.text"></div>
               </div>
             </template>
-            <div x-show="feed.length === 0" style="padding:16px;color:var(--text2);font-size:12px;">Waiting for events...</div>
+            <div x-show="filteredFeed.length === 0" style="padding:20px 16px;color:var(--text2);font-size:12px;text-align:center;">
+              <div style="font-size:24px;margin-bottom:8px;">📡</div>
+              Waiting for events...
+            </div>
           </div>
         </div>
       </div>
@@ -150,11 +200,11 @@
         <!-- Chat List -->
         <div class="chat-list">
           <div class="chat-list-header">
-            <h2>Chats</h2>
+            <h2>💬 Chats</h2>
             <div class="badge" x-text="instances.length"></div>
           </div>
           <div class="chat-list-search">
-            <input type="text" placeholder="Search instances..." x-model="chatSearch">
+            <input type="text" placeholder="🔍 Search..." x-model="chatSearch">
           </div>
           <div class="chat-list-items">
             <template x-for="(inst, i) in filteredInstances" :key="inst.id">
@@ -170,6 +220,9 @@
                 </div>
                 <div class="chat-item-meta">
                   <div class="chat-item-time" x-text="lastTimes[inst.id] || ''"></div>
+                  <div class="chat-item-status" x-show="instanceStats[inst.id]?.requests > 0">
+                    <span style="font-size:9px;color:var(--text2);" x-text="(instanceStats[inst.id]?.requests||0) + ' msg'"></span>
+                  </div>
                 </div>
               </div>
             </template>
@@ -183,19 +236,32 @@
               <div class="chat-avatar" :style="'background:' + avatarColors[instances.findIndex(i=>i.id===chatInstanceId) % avatarColors.length]" x-text="currentInstance?.emoji || '🤖'"></div>
               <div class="chat-area-info">
                 <h3 x-text="currentInstance?.name || ''"></h3>
-                <span x-text="(currentInstance?.model?.split('/').pop() || '') + ' · ' + (currentInstance?.status || '')"></span>
+                <span>
+                  <span x-text="currentInstance?.model?.split('/').pop() || ''"></span>
+                  · <span :style="currentInstance?.status==='running'?'color:var(--green)':'color:var(--red)'" x-text="currentInstance?.status || ''"></span>
+                  <span x-show="instanceStats[chatInstanceId]?.requests > 0" style="color:var(--text2);">
+                    · <span x-text="(instanceStats[chatInstanceId]?.requests||0)"></span> requests
+                    · <span x-text="formatNum((instanceStats[chatInstanceId]?.inputTokens||0)+(instanceStats[chatInstanceId]?.outputTokens||0))"></span> tokens
+                  </span>
+                </span>
               </div>
               <div class="chat-area-actions">
-                <button @click="chatMessages = []" title="Clear chat">🗑️</button>
+                <button @click="clearChat()" title="Clear chat display">🗑️</button>
               </div>
             </div>
             <div class="chat-messages" x-ref="chatScroll">
-              <template x-for="msg in chatMessages" :key="msg.id">
-                <div class="msg-bubble" :class="msg.role">
-                  <div class="msg-content" x-html="renderMd(msg.text)"></div>
-                  <div class="msg-meta">
-                    <span x-text="msg.role === 'user' ? 'You' : currentInstance?.name"></span>
-                    · <span x-text="fmtTime(msg.timestamp)"></span>
+              <!-- Date separator for first message -->
+              <div x-show="chatMessages.length > 0" class="chat-date-sep">
+                <span x-text="new Date(chatMessages[0]?.timestamp || Date.now()).toLocaleDateString('en-US', {weekday:'long', month:'short', day:'numeric'})"></span>
+              </div>
+              <template x-for="(msg, idx) in chatMessages" :key="msg.id">
+                <div>
+                  <div class="msg-bubble" :class="msg.role">
+                    <div class="msg-content" x-html="renderMd(msg.text)"></div>
+                    <div class="msg-meta">
+                      <span x-text="msg.role === 'user' ? 'You' : (currentInstance?.emoji||'🤖') + ' ' + (currentInstance?.name||'')"></span>
+                      · <span x-text="fmtTime(msg.timestamp)"></span>
+                    </div>
                   </div>
                 </div>
               </template>
@@ -205,8 +271,12 @@
             </div>
             <div class="chat-input-area">
               <form @submit.prevent="sendChat()">
-                <input type="text" x-model="chatInput" placeholder="Type a message..." autofocus x-ref="chatInputEl">
-                <button type="submit" class="send-btn" :disabled="!chatInput.trim()">➤</button>
+                <input type="text" x-model="chatInput" placeholder="Type a message..." autofocus x-ref="chatInputEl"
+                  @keydown.escape="chatInput = ''">
+                <button type="submit" class="send-btn" :disabled="!chatInput.trim() || chatTyping">
+                  <span x-show="!chatTyping">➤</span>
+                  <span x-show="chatTyping" class="typing-indicator" style="scale:0.6;">⏳</span>
+                </button>
               </form>
             </div>
           </div>
@@ -216,7 +286,8 @@
         <template x-if="!chatInstanceId">
           <div class="chat-empty">
             <div class="emoji">💬</div>
-            <div class="text">Select an instance to start chatting</div>
+            <div class="text" style="font-size:15px;font-weight:500;">Select an instance to start chatting</div>
+            <div style="font-size:12px;color:var(--text2);margin-top:4px;">Choose from the list on the left</div>
           </div>
         </template>
       </div>
@@ -359,6 +430,40 @@
 </div>
 
 <script>
+function dashboardPage() {
+  return {
+    sysHealth: {},
+    _timer: null,
+    async fetchHealth() {
+      try {
+        const r = await fetch('/api/doctor');
+        this.sysHealth = await r.json();
+      } catch {}
+    },
+    startPolling() {
+      this.fetchHealth();
+      this._timer = setInterval(() => this.fetchHealth(), 10000);
+    },
+    destroy() { if (this._timer) clearInterval(this._timer); },
+    fmtUptime(s) {
+      if (!s) return '0s';
+      if (s < 60) return s + 's';
+      if (s < 3600) return Math.floor(s/60) + 'm';
+      const h = Math.floor(s/3600);
+      if (h < 24) return h + 'h ' + Math.floor((s%3600)/60) + 'm';
+      return Math.floor(h/24) + 'd ' + (h%24) + 'h';
+    },
+    get filteredFeed() {
+      const f = this.feed || this.$data?.feed || [];
+      if (this.feedTab === 'All' || this.$data?.feedTab === 'All') return f;
+      const tab = this.feedTab || this.$data?.feedTab || 'All';
+      if (tab === 'System') return f.filter(e => e.agent === 'System' || e.text?.includes('health') || e.text?.includes('instance'));
+      if (tab === 'Chat') return f.filter(e => e.text?.includes('chat') || e.text?.includes('message'));
+      return f;
+    },
+  };
+}
+
 function healthPage() {
   return {
     doctor: {},
@@ -514,10 +619,16 @@ function app() {
 
     sendChat() {
       const text = this.chatInput.trim();
-      if (!text || !this.chatInstanceId) return;
+      if (!text || !this.chatInstanceId || this.chatTyping) return;
       this.ws.send(JSON.stringify({ type: 'chat_message', instanceId: this.chatInstanceId, text }));
       this.chatInput = '';
       this.chatTyping = true;
+    },
+
+    clearChat() {
+      if (confirm('Clear chat display? (History is preserved in database)')) {
+        this.chatMessages = [];
+      }
     },
 
     async pollStats() {
