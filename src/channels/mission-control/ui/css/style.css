@@ -5,6 +5,8 @@
   --accent: #3b82f6; --green: #22c55e; --yellow: #eab308;
   --red: #ef4444; --orange: #f97316; --purple: #a855f7;
   --cyan: #06b6d4;
+  --bg-tertiary: #0d1220;
+  --text-muted: #6b7a94;
   --sidebar-w: 68px;
   --chatlist-w: 320px;
 }
@@ -246,6 +248,34 @@ body { font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', 'Courier New', mon
 .tab { padding: 10px 16px; font-size: 11px; color: var(--text2); cursor: pointer; border-bottom: 2px solid transparent; text-transform: uppercase; letter-spacing: 1px; transition: all 0.15s; }
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* Stat cards (dashboard top row) */
+.stat-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 14px 16px; text-align: center;
+}
+.stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--text2); margin-bottom: 6px; }
+.stat-value { font-size: 22px; font-weight: 700; color: var(--text); }
+
+/* Quick chat row */
+.quick-chat-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 0;
+  border-bottom: 1px solid var(--border); cursor: pointer; transition: opacity 0.15s;
+}
+.quick-chat-row:hover { opacity: 0.8; }
+.quick-chat-row:last-child { border-bottom: none; }
+
+/* Chat date separator */
+.chat-date-sep {
+  text-align: center; padding: 16px 0 8px; font-size: 11px; color: var(--text2);
+}
+.chat-date-sep span {
+  background: var(--surface2); padding: 4px 12px; border-radius: 8px; border: 1px solid var(--border);
+}
+
+/* Health cards extra */
+.card .config-row:last-child { border-bottom: none; }
+.bg-tertiary { background: var(--bg); }
 
 /* Responsive */
 @media (max-width: 1024px) {
