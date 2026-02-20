@@ -52,16 +52,28 @@ export class OpenAICompatibleProvider extends BaseProvider {
     }));
 
     const openaiMessages = messages.map(msg => {
-      if (msg.role === 'assistant' && msg.toolCalls) {
+      // Handle both camelCase (toolCalls) and snake_case (tool_calls) formats
+      const toolCalls = msg.toolCalls || msg.tool_calls;
+      if (msg.role === 'assistant' && toolCalls) {
         const assistantMsg = {
-          role: 'assistant', content: msg.text || null,
-          tool_calls: msg.toolCalls.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.name, arguments: JSON.stringify(tc.input) } }))
+          role: 'assistant', content: msg.content || msg.text || null,
+          tool_calls: toolCalls.map(tc => ({
+            id: tc.id,
+            type: 'function',
+            function: {
+              name: tc.name || tc.function?.name,
+              arguments: tc.input ? JSON.stringify(tc.input) : (tc.function?.arguments || '{}')
+            }
+          }))
         };
         // Kimi requires reasoning_content in assistant tool call messages when thinking is enabled
-        if (msg.reasoningContent) assistantMsg.reasoning_content = msg.reasoningContent;
+        if (msg.reasoningContent || msg.reasoning_content) {
+          assistantMsg.reasoning_content = msg.reasoningContent || msg.reasoning_content;
+        }
         return assistantMsg;
-      } else if (msg.role === 'tool' || (msg.role === 'user' && msg.toolResults)) {
-        return (msg.toolResults || [msg]).map(tr => ({ role: 'tool', tool_call_id: tr.id, content: String(tr.result || tr.content) }));
+      } else if (msg.role === 'tool' || (msg.role === 'user' && (msg.toolResults || msg.tool_results))) {
+        const results = msg.toolResults || msg.tool_results || [msg];
+        return results.map(tr => ({ role: 'tool', tool_call_id: tr.id || tr.tool_call_id, content: String(tr.result || tr.content || '') }));
       }
       return msg;
     }).flat();
