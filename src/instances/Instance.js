@@ -89,9 +89,9 @@ export class Instance {
     this.debugLogger = new DebugLogger(this.dataDir, this.config.debug === true);
     if (this.config.debug) {
       console.log(`[Instance:${this.id}] Debug logging enabled`);
-      // Set debug logger on router's AI client if available
-      if (this.router?._client?.setDebugLogger) {
-        this.router._client.setDebugLogger(this.debugLogger);
+      // Set debug logger on router
+      if (this.router?.setDebugLogger) {
+        this.router.setDebugLogger(this.debugLogger);
       }
     }
     
