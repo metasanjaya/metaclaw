@@ -21,6 +21,8 @@ export class OpenAICompatibleProvider extends BaseProvider {
     this.defaultModel = config.defaultModel || preset.defaultModel;
     // Kimi: default reasoning false (thinking mode causes issues with tools)
     this.reasoning = providerName === 'kimi' ? false : (config.reasoning !== false);
+    // Temperature: use config or provider default
+    this.temperature = config.temperature ?? (providerName === 'kimi' ? 0.6 : 0.7);
     this.client = new OpenAI({
       apiKey: config.apiKey || process.env[preset.envKey],
       baseURL: config.baseURL || preset.baseURL,
@@ -28,15 +30,13 @@ export class OpenAICompatibleProvider extends BaseProvider {
   }
 
   async chat(messages, options = {}) {
-    let { model = this.defaultModel, maxTokens = 1000, temperature = 0.7 } = options;
-    if (this.name === 'kimi') temperature = 0.6;
+    let { model = this.defaultModel, maxTokens = 1000, temperature = this.temperature } = options;
     const completion = await this.client.chat.completions.create({ model, messages, max_tokens: maxTokens, temperature });
     return this._normalize(completion.choices[0].message.content, completion.usage?.total_tokens || 0, model);
   }
 
   async chatWithTools(messages, tools, options = {}) {
-    let { model = this.defaultModel, maxTokens = 1000, temperature = 0.7, toolChoice } = options;
-    if (this.name === 'kimi') temperature = 0.6;
+    let { model = this.defaultModel, maxTokens = 1000, temperature = this.temperature, toolChoice } = options;
 
     // Map toolChoice from internal format to OpenAI format
     // Kimi: tool_choice 'required' is incompatible with thinking — fall back to 'auto'
