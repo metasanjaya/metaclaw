@@ -119,8 +119,8 @@ export class OpenAICompatibleProvider extends BaseProvider {
       outputTokens: completion.usage?.completion_tokens || 0,
       model: `${this.name}:${model}`, provider: this.name,
     };
-    // Preserve reasoning_content for Kimi thinking mode
-    if (message.reasoning_content) result.reasoningContent = message.reasoning_content;
+    // Preserve reasoning_content for Kimi thinking mode (check undefined, not falsy)
+    if (message.reasoning_content !== undefined) result.reasoningContent = message.reasoning_content;
     return result;
   }
 }
