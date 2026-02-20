@@ -67,8 +67,8 @@ export class OpenAICompatibleProvider extends BaseProvider {
           }))
         };
         // Kimi requires reasoning_content in assistant tool call messages when thinking is enabled
-        if (msg.reasoningContent || msg.reasoning_content) {
-          assistantMsg.reasoning_content = msg.reasoningContent || msg.reasoning_content;
+        if (msg.reasoningContent !== undefined || msg.reasoning_content !== undefined) {
+          assistantMsg.reasoning_content = msg.reasoningContent ?? msg.reasoning_content ?? '';
         }
         return assistantMsg;
       } else if (msg.role === 'tool' || (msg.role === 'user' && (msg.toolResults || msg.tool_results))) {
@@ -78,14 +78,23 @@ export class OpenAICompatibleProvider extends BaseProvider {
       return msg;
     }).flat();
 
-    const createOpts = { model, messages: openaiMessages, tools: openaiTools, tool_choice: openaiToolChoice, max_tokens: maxTokens, temperature };
+    // Kimi: don't send tool_choice when thinking is enabled (causes 400 error)
+    const createOpts = { model, messages: openaiMessages, tools: openaiTools, max_tokens: maxTokens, temperature };
+    if (this.name !== 'kimi') {
+      createOpts.tool_choice = openaiToolChoice;
+    }
     // Kimi: ALL assistant messages need reasoning_content when thinking is enabled (avoid 400 error)
     if (this.name === 'kimi') {
+      let addedCount = 0;
       for (const msg of openaiMessages) {
-        if (msg.role === 'assistant' && !msg.reasoning_content) {
+        if (msg.role === 'assistant' && msg.reasoning_content === undefined) {
           msg.reasoning_content = '';
+          addedCount++;
         }
       }
+      // Debug: log assistant messages
+      const assistantMsgs = openaiMessages.filter(m => m.role === 'assistant');
+      console.log(`[Kimi] ${assistantMsgs.length} assistant messages, added reasoning_content to ${addedCount}`);
     }
     const completion = await this.client.chat.completions.create(createOpts);
 

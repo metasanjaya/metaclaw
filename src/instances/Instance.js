@@ -321,11 +321,14 @@ export class Instance {
     const messages = this.chatStore.getConversation(chatId, 50);
     // Kimi requires reasoning_content on all assistant messages when tools are used
     if (this.model?.includes('kimi')) {
+      let assistantCount = 0;
       for (const msg of messages) {
-        if (msg.role === 'assistant') {
+        if (msg.role === 'assistant' && msg.reasoning_content === undefined) {
           msg.reasoning_content = '';
+          assistantCount++;
         }
       }
+      console.log(`[Instance:${this.id}] Loaded ${messages.length} msgs, ${assistantCount} assistant (added reasoning_content)`);
     }
     return messages;
   }
@@ -424,7 +427,7 @@ export class Instance {
         };
         // Kimi requires reasoning_content on all assistant messages
         if (this.model?.includes('kimi')) {
-          assistantMsg.reasoning_content = response.reasoningContent || '';
+          assistantMsg.reasoning_content = response.reasoningContent ?? '';
         }
         workingMessages.push(assistantMsg);
         for (const tr of toolResults) {
