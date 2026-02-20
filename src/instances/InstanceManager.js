@@ -75,6 +75,22 @@ export class InstanceManager {
   }
 
   /**
+   * Create and start a new instance at runtime
+   * @param {string} id
+   * @param {Object} opts — { name, emoji, model, personality, channels, skills }
+   */
+  async create(id, opts = {}) {
+    if (this.instances.has(id)) throw new Error(`Instance "${id}" already exists`);
+    const dir = this.configManager.createInstance(id, opts);
+    const config = this.configManager.getInstance(id);
+    const instance = new Instance({ id, config, eventBus: this.eventBus, router: this.router });
+    this.instances.set(id, instance);
+    await instance.start();
+    this.eventBus.emit('instance.spawn', { id, name: opts.name || id, emoji: opts.emoji || '🤖' });
+    return instance;
+  }
+
+  /**
    * Get instance by ID
    * @param {string} id
    * @returns {Instance|undefined}
