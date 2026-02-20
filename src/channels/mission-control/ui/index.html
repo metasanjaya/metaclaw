@@ -6,316 +6,376 @@
 <title>MetaClaw Mission Control</title>
 <link rel="stylesheet" href="/css/style.css">
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
-<body x-data="mc()" x-init="init()">
+<body x-data="app()" x-init="init()">
+<div class="app">
 
-<!-- Top Bar -->
-<div class="topbar">
-  <div class="topbar-left">
-    <div class="logo">⚡ METACLAW <span>MISSION CONTROL</span></div>
-    <div class="status-pill" :class="connected ? 'status-online' : 'status-offline'" x-text="connected ? '● Online' : '● Offline'"></div>
-  </div>
-  <div class="topbar-stats">
-    <div class="topbar-stat"><div class="value" x-text="instances.length">0</div><div class="label">Agents Active</div></div>
-    <div class="topbar-stat"><div class="value" x-text="tasks.queue.length + tasks.inProgress.length">0</div><div class="label">Tasks in Queue</div></div>
-    <div class="topbar-stat"><div class="value" x-text="'$' + stats.costToday.toFixed(2)">$0.00</div><div class="label">Cost Today</div></div>
-    <div class="topbar-stat"><div class="value" x-text="formatNum(stats.tokensToday)">0</div><div class="label">Tokens Today</div></div>
-  </div>
-  <div class="topbar-right">
-    <div><div class="clock" x-text="clock">00:00:00</div><div class="clock-date" x-text="clockDate">---</div></div>
-  </div>
-</div>
+  <!-- Icon Sidebar -->
+  <div class="icon-sidebar">
+    <div class="logo" @click="page='dashboard'" title="MetaClaw">⚡</div>
 
-<!-- Nav -->
-<div class="nav">
-  <a href="/" class="active">Dashboard</a>
-  <a href="/chat">Chat</a>
-  <a href="/health">Health</a>
-  <a href="/settings">Settings</a>
-</div>
-
-<!-- Main Layout -->
-<div class="layout">
-
-  <!-- LEFT: Instances -->
-  <div class="panel-left">
-    <div class="panel-header">
-      <div class="panel-title">Instances</div>
-      <div class="badge" x-text="instances.length">0</div>
+    <div class="sidebar-icon" :class="page==='dashboard' ? 'active' : ''" @click="page='dashboard'">
+      📊<span class="tooltip">Dashboard</span>
     </div>
-    <template x-for="(inst, i) in instances" :key="inst.id">
-      <div class="agent-card" :class="i === 0 ? 'active' : ''" @click="window.location.href='/chat/'+inst.id">
-        <div class="agent-top">
-          <div class="agent-avatar" :style="'background:' + avatarColors[i % avatarColors.length]" x-text="inst.emoji || inst.name[0]"></div>
-          <div>
-            <div class="agent-name" x-text="inst.name"></div>
-            <div class="agent-role" x-text="inst.model?.split('/').pop() || ''"></div>
+    <div class="sidebar-icon" :class="page==='chat' ? 'active' : ''" @click="page='chat'">
+      💬<span class="tooltip">Chat</span>
+      <div class="badge-dot" x-show="false"></div>
+    </div>
+    <div class="sidebar-icon" :class="page==='health' ? 'active' : ''" @click="page='health'">
+      🩺<span class="tooltip">Health</span>
+    </div>
+    <div class="sidebar-icon" :class="page==='settings' ? 'active' : ''" @click="page='settings'">
+      ⚙️<span class="tooltip">Settings</span>
+    </div>
+
+    <div class="sidebar-spacer"></div>
+
+    <div class="sidebar-icon" :style="'color:' + (connected ? 'var(--green)' : 'var(--red)')">
+      <span x-text="connected ? '●' : '○'"></span>
+      <span class="tooltip" x-text="connected ? 'Connected' : 'Disconnected'"></span>
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <div class="main-content">
+
+    <!-- ========== DASHBOARD ========== -->
+    <template x-if="page==='dashboard'">
+      <div class="dashboard-layout">
+        <!-- Left: Instances -->
+        <div class="panel-left">
+          <div class="panel-header">
+            <div class="panel-title">Instances</div>
+            <div class="badge" x-text="instances.length">0</div>
+          </div>
+          <template x-for="(inst, i) in instances" :key="inst.id">
+            <div class="agent-card" @click="page='chat'; selectInstance(inst.id)">
+              <div class="agent-top">
+                <div class="agent-avatar" :style="'background:' + avatarColors[i % avatarColors.length]" x-text="inst.emoji || inst.name[0]"></div>
+                <div>
+                  <div class="agent-name" x-text="inst.name"></div>
+                  <div class="agent-role" x-text="inst.model?.split('/').pop() || ''"></div>
+                </div>
+              </div>
+              <div class="agent-status">
+                <div class="dot" :class="inst.status === 'running' ? 'dot-green' : 'dot-red'"></div>
+                <span x-text="inst.status"></span>
+              </div>
+              <div class="agent-metrics">
+                <div class="agent-metric">Requests: <span x-text="instanceStats[inst.id]?.requests || 0"></span></div>
+                <div class="agent-metric">Tokens: <span x-text="formatNum(instanceStats[inst.id]?.outputTokens || 0)"></span></div>
+              </div>
+            </div>
+          </template>
+          <div class="add-instance">+ Add Instance</div>
+          <div class="panel-header" style="margin-top:8px;"><div class="panel-title">System</div></div>
+          <div style="padding:12px 16px;">
+            <div class="config-row"><span class="config-key">WebSocket</span><span class="config-val" :style="'color:' + (connected ? 'var(--green)' : 'var(--red)')" x-text="connected ? '● Connected' : '● Offline'"></span></div>
+            <div class="config-row"><span class="config-key">Instances</span><span class="config-val" x-text="instances.length + ' loaded'"></span></div>
+            <div class="config-row"><span class="config-key">Doctor</span><span class="config-val" style="color:var(--green)">● Active</span></div>
           </div>
         </div>
-        <div class="agent-status">
-          <div class="dot" :class="inst.status === 'running' ? 'dot-green' : inst.status === 'stopped' ? 'dot-red' : 'dot-yellow'"></div>
-          <span x-text="inst.status"></span>
+
+        <!-- Center: Dashboard -->
+        <div class="panel-center">
+          <div class="grid-2">
+            <div class="card">
+              <div class="card-title"><span class="icon">📊</span> Token Usage (Today)</div>
+              <template x-for="(inst, i) in instances" :key="inst.id">
+                <div>
+                  <div class="token-row"><span class="token-model" x-text="inst.name"></span><span class="token-value" x-text="formatNum((instanceStats[inst.id]?.inputTokens||0)+(instanceStats[inst.id]?.outputTokens||0))"></span></div>
+                  <div class="token-bar"><div class="token-fill" :style="'width:' + Math.min(100, ((instanceStats[inst.id]?.inputTokens||0)+(instanceStats[inst.id]?.outputTokens||0))/50000*100) + '%;background:' + tokenColors[i % tokenColors.length]"></div></div>
+                </div>
+              </template>
+            </div>
+            <div class="card">
+              <div class="card-title"><span class="icon">💰</span> Cost Summary</div>
+              <div class="token-row" style="margin-bottom:8px;"><span class="token-model">Total Requests</span><span class="token-value" x-text="totalRequests"></span></div>
+              <div class="token-row" style="margin-bottom:8px;"><span class="token-model">Total Input Tokens</span><span class="token-value" x-text="formatNum(totalInputTokens)"></span></div>
+              <div class="token-row"><span class="token-model">Total Output Tokens</span><span class="token-value" x-text="formatNum(totalOutputTokens)"></span></div>
+            </div>
+          </div>
+          <div class="card" style="margin-bottom:16px;">
+            <div class="card-title"><span class="icon">📋</span> Task Board</div>
+            <div class="task-columns">
+              <div class="task-col"><div class="task-col-header"><div class="dot dot-yellow" style="width:6px;height:6px;"></div> Queue <span class="task-col-count">0</span></div></div>
+              <div class="task-col"><div class="task-col-header"><div class="dot dot-green" style="width:6px;height:6px;"></div> In Progress <span class="task-col-count">0</span></div></div>
+              <div class="task-col"><div class="task-col-header">✓ Done <span class="task-col-count">0</span></div></div>
+            </div>
+          </div>
+          <div class="grid-2">
+            <div class="card">
+              <div class="card-title"><span class="icon">💬</span> Active Conversations</div>
+              <div style="font-size:12px;color:var(--text2);">Click an instance to start chatting</div>
+            </div>
+            <div class="card">
+              <div class="card-title"><span class="icon">🧠</span> Memory & Knowledge</div>
+              <div class="knowledge-stat"><span>Instances</span><span class="kv" x-text="instances.length"></span></div>
+            </div>
+          </div>
         </div>
-        <div class="agent-metrics">
-          <div class="agent-metric">Channels: <span x-text="inst.channels?.length || 0"></span></div>
+
+        <!-- Right: Live Feed -->
+        <div class="panel-right">
+          <div class="panel-header">
+            <div class="panel-title">Live Feed</div>
+            <div class="badge" style="background:var(--green);">Live</div>
+          </div>
+          <div class="tabs">
+            <template x-for="tab in ['All','Tasks','Errors','Comms']" :key="tab">
+              <div class="tab" :class="feedTab === tab ? 'active' : ''" @click="feedTab = tab" x-text="tab"></div>
+            </template>
+          </div>
+          <div style="overflow-y:auto;">
+            <template x-for="(evt, i) in feed" :key="i">
+              <div class="feed-item">
+                <div class="feed-top">
+                  <div class="feed-dot" :style="'background:' + (evt.color || 'var(--accent)')" x-text="evt.initial"></div>
+                  <div class="feed-agent" x-text="evt.agent"></div>
+                  <div class="feed-time" x-text="evt.time"></div>
+                </div>
+                <div class="feed-text" x-text="evt.text"></div>
+              </div>
+            </template>
+            <div x-show="feed.length === 0" style="padding:16px;color:var(--text2);font-size:12px;">Waiting for events...</div>
+          </div>
         </div>
       </div>
     </template>
-    <div class="add-instance" @click="window.location.href='/settings'">+ Add Instance</div>
 
-    <div class="panel-header" style="margin-top:8px;">
-      <div class="panel-title">System</div>
-    </div>
-    <div style="padding:12px 16px;">
-      <div class="config-row"><span class="config-key">WebSocket</span><span class="config-val" :style="'color:' + (connected ? 'var(--green)' : 'var(--red)')" x-text="connected ? '● Connected' : '● Disconnected'"></span></div>
-      <div class="config-row"><span class="config-key">Instances</span><span class="config-val" x-text="instances.length + ' loaded'"></span></div>
-      <div class="config-row"><span class="config-key">Doctor</span><span class="config-val" style="color:var(--green)">● Active</span></div>
-      <div class="config-row"><span class="config-key">Uptime</span><span class="config-val" x-text="uptime"></span></div>
-    </div>
-  </div>
-
-  <!-- CENTER: Dashboard -->
-  <div class="panel-center">
-
-    <!-- Token Usage & Cost -->
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-title"><span class="icon">📊</span> Token Usage (Today)</div>
-        <template x-for="(item, i) in stats.tokenBreakdown" :key="item.model">
-          <div>
-            <div class="token-row"><span class="token-model" x-text="item.model"></span><span class="token-value" x-text="formatNum(item.tokens)"></span></div>
-            <div class="token-bar"><div class="token-fill" :style="'width:' + item.pct + '%;background:' + tokenColors[i % tokenColors.length]"></div></div>
+    <!-- ========== CHAT (WhatsApp/Telegram style) ========== -->
+    <template x-if="page==='chat'">
+      <div class="chat-layout">
+        <!-- Chat List -->
+        <div class="chat-list">
+          <div class="chat-list-header">
+            <h2>Chats</h2>
+            <div class="badge" x-text="instances.length"></div>
           </div>
-        </template>
-        <div x-show="stats.tokenBreakdown.length === 0" style="font-size:12px;color:var(--text2);">No token data yet</div>
-        <div style="margin-top:8px;display:flex;justify-content:space-between;font-size:12px;" x-show="stats.dailyBudget > 0">
-          <span class="token-model">Daily Budget</span>
-          <span class="token-value" x-text="formatNum(stats.tokensToday) + ' / ' + formatNum(stats.dailyBudget) + ' (' + Math.round(stats.tokensToday/stats.dailyBudget*100) + '%)'"></span>
+          <div class="chat-list-search">
+            <input type="text" placeholder="Search instances..." x-model="chatSearch">
+          </div>
+          <div class="chat-list-items">
+            <template x-for="(inst, i) in filteredInstances" :key="inst.id">
+              <div class="chat-item" :class="chatInstanceId === inst.id ? 'active' : ''" @click="selectInstance(inst.id)">
+                <div class="chat-avatar" :style="'background:' + avatarColors[i % avatarColors.length]" x-text="inst.emoji || inst.name[0]"></div>
+                <div class="chat-item-info">
+                  <div class="chat-item-name">
+                    <span x-text="inst.name"></span>
+                    <div class="dot" :class="inst.status === 'running' ? 'dot-green' : 'dot-red'" style="width:6px;height:6px;"></div>
+                  </div>
+                  <div class="chat-item-model" x-text="inst.model?.split('/').pop() || 'no model'"></div>
+                  <div class="chat-item-preview" x-text="lastMessages[inst.id] || 'No messages yet'"></div>
+                </div>
+                <div class="chat-item-meta">
+                  <div class="chat-item-time" x-text="lastTimes[inst.id] || ''"></div>
+                </div>
+              </div>
+            </template>
+          </div>
         </div>
-      </div>
 
-      <div class="card">
-        <div class="card-title"><span class="icon">💰</span> Cost (7-Day Trend)</div>
-        <div class="chart-placeholder">
-          <template x-for="(day, i) in stats.costWeekly" :key="i">
-            <div class="chart-bar" :style="'height:' + (day.pct || 5) + '%'" :title="'$' + day.cost.toFixed(2)"></div>
-          </template>
-        </div>
-        <div class="chart-labels">
-          <template x-for="day in stats.costWeekly" :key="day.label">
-            <span x-text="day.label"></span>
-          </template>
-        </div>
-        <div style="margin-top:12px;display:flex;justify-content:space-between;font-size:12px;">
-          <span class="token-model">Today</span><span class="token-value" x-text="'$' + stats.costToday.toFixed(2)"></span>
-        </div>
-        <div style="display:flex;justify-content:space-between;font-size:12px;margin-top:4px;">
-          <span class="token-model">This Week</span><span class="token-value" x-text="'$' + stats.costWeekTotal.toFixed(2)"></span>
-        </div>
-        <div style="display:flex;justify-content:space-between;font-size:12px;margin-top:4px;">
-          <span class="token-model">Monthly Est.</span><span class="token-value" x-text="'$' + (stats.costWeekTotal / 7 * 30).toFixed(2)"></span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Task Board -->
-    <div class="card" style="margin-bottom:16px;">
-      <div class="card-title"><span class="icon">📋</span> Task Board</div>
-      <div class="task-columns">
-        <div class="task-col">
-          <div class="task-col-header"><div class="dot dot-yellow" style="width:6px;height:6px;"></div> Queue <span class="task-col-count" x-text="tasks.queue.length">0</span></div>
-          <template x-for="t in tasks.queue" :key="t.id">
-            <div class="task-item">
-              <div class="task-priority" :class="'priority-' + (t.priority || 'medium')" x-text="(t.priority || 'MED').toUpperCase()"></div>
-              <div class="task-item-title" x-text="t.title"></div>
-              <div class="task-item-agent" x-text="'→ ' + (t.agent || 'Unassigned')"></div>
+        <!-- Chat Area -->
+        <template x-if="chatInstanceId">
+          <div class="chat-area">
+            <div class="chat-area-header">
+              <div class="chat-avatar" :style="'background:' + avatarColors[instances.findIndex(i=>i.id===chatInstanceId) % avatarColors.length]" x-text="currentInstance?.emoji || '🤖'"></div>
+              <div class="chat-area-info">
+                <h3 x-text="currentInstance?.name || ''"></h3>
+                <span x-text="(currentInstance?.model?.split('/').pop() || '') + ' · ' + (currentInstance?.status || '')"></span>
+              </div>
+              <div class="chat-area-actions">
+                <button @click="chatMessages = []" title="Clear chat">🗑️</button>
+              </div>
             </div>
-          </template>
-        </div>
-        <div class="task-col">
-          <div class="task-col-header"><div class="dot dot-green" style="width:6px;height:6px;"></div> In Progress <span class="task-col-count" x-text="tasks.inProgress.length">0</span></div>
-          <template x-for="t in tasks.inProgress" :key="t.id">
-            <div class="task-item">
-              <div class="task-priority" :class="'priority-' + (t.priority || 'medium')" x-text="(t.priority || 'MED').toUpperCase()"></div>
-              <div class="task-item-title" x-text="t.title"></div>
-              <div class="task-item-agent" x-text="'→ ' + (t.agent || '') + ' · ' + (t.time || '')"></div>
+            <div class="chat-messages" x-ref="chatScroll">
+              <template x-for="msg in chatMessages" :key="msg.id">
+                <div class="msg-bubble" :class="msg.role">
+                  <div class="msg-content" x-html="renderMd(msg.text)"></div>
+                  <div class="msg-meta">
+                    <span x-text="msg.role === 'user' ? 'You' : currentInstance?.name"></span>
+                    · <span x-text="fmtTime(msg.timestamp)"></span>
+                  </div>
+                </div>
+              </template>
+              <div x-show="chatTyping" class="msg-bubble assistant">
+                <div class="msg-content"><div class="typing-indicator"><span></span><span></span><span></span></div></div>
+              </div>
             </div>
-          </template>
-        </div>
-        <div class="task-col">
-          <div class="task-col-header">✓ Done Today <span class="task-col-count" x-text="tasks.done.length">0</span></div>
-          <template x-for="t in tasks.done" :key="t.id">
-            <div class="task-item" style="opacity:0.6;">
-              <div class="task-item-title" x-text="'✅ ' + t.title"></div>
-              <div class="task-item-agent" x-text="(t.agent || '') + ' · ' + (t.time || '')"></div>
-            </div>
-          </template>
-        </div>
-      </div>
-    </div>
-
-    <!-- Active Conversations & Memory -->
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-title"><span class="icon">💬</span> Active Conversations</div>
-        <template x-for="conv in conversations" :key="conv.id">
-          <div class="conv-item" @click="window.location.href='/chat/' + conv.instanceId">
-            <div class="conv-avatar" x-text="conv.name[0]"></div>
-            <div class="conv-info">
-              <div class="conv-name" x-text="conv.name"></div>
-              <div class="conv-preview" x-text="conv.preview"></div>
-            </div>
-            <div>
-              <div class="conv-time" x-text="conv.time"></div>
-              <div class="conv-badge" x-show="conv.unread" x-text="conv.unread"></div>
+            <div class="chat-input-area">
+              <form @submit.prevent="sendChat()">
+                <input type="text" x-model="chatInput" placeholder="Type a message..." autofocus x-ref="chatInputEl">
+                <button type="submit" class="send-btn" :disabled="!chatInput.trim()">➤</button>
+              </form>
             </div>
           </div>
         </template>
-        <div x-show="conversations.length === 0" style="font-size:12px;color:var(--text2);padding:8px 0;">No active conversations</div>
-      </div>
 
-      <div class="card">
-        <div class="card-title"><span class="icon">🧠</span> Memory & Knowledge</div>
-        <div class="knowledge-stat"><span>RAG Documents</span><span class="kv" x-text="knowledge.ragDocs">0</span></div>
-        <div class="knowledge-stat"><span>Memory Entries</span><span class="kv" x-text="knowledge.memoryEntries">0</span></div>
-        <div class="knowledge-stat"><span>Last Sync</span><span class="kv" x-text="knowledge.lastSync">-</span></div>
-        <div style="margin-top:8px;font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:1px;">Recent Learnings</div>
-        <template x-for="l in knowledge.learnings" :key="l.id">
-          <div class="learning-item">
-            <div class="learning-agent" x-text="l.agent + ' · ' + l.time"></div>
-            <div class="learning-text" x-text="l.text"></div>
+        <!-- No chat selected -->
+        <template x-if="!chatInstanceId">
+          <div class="chat-empty">
+            <div class="emoji">💬</div>
+            <div class="text">Select an instance to start chatting</div>
           </div>
         </template>
       </div>
-    </div>
+    </template>
 
-  </div>
-
-  <!-- RIGHT: Live Feed -->
-  <div class="panel-right">
-    <div class="panel-header">
-      <div class="panel-title">Live Feed</div>
-      <div class="badge" style="background:var(--green);">Live</div>
-    </div>
-    <div class="tabs">
-      <template x-for="tab in feedTabs" :key="tab">
-        <div class="tab" :class="feedTab === tab ? 'active' : ''" @click="feedTab = tab" x-text="tab"></div>
-      </template>
-    </div>
-    <div style="overflow-y:auto;flex:1;">
-      <template x-for="(evt, i) in filteredFeed" :key="i">
-        <div class="feed-item">
-          <div class="feed-top">
-            <div class="feed-dot" :style="'background:' + (evt.color || 'var(--accent)')" x-text="evt.initial"></div>
-            <div class="feed-agent" x-text="evt.agent"></div>
-            <div class="feed-time" x-text="evt.time"></div>
-          </div>
-          <div class="feed-text" x-html="evt.text"></div>
+    <!-- ========== HEALTH ========== -->
+    <template x-if="page==='health'">
+      <div style="padding:40px; width:100%; overflow-y:auto;">
+        <h2 style="font-size:16px; margin-bottom:20px;">🩺 Health Monitor</h2>
+        <div class="grid-2" style="max-width:900px;">
+          <template x-for="inst in instances" :key="inst.id">
+            <div class="card">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+                <span x-text="inst.emoji" style="font-size:20px;"></span>
+                <span style="font-weight:600;" x-text="inst.name"></span>
+                <div class="dot" :class="inst.status === 'running' ? 'dot-green' : 'dot-red'" style="margin-left:auto;"></div>
+              </div>
+              <div class="config-row"><span class="config-key">Status</span><span class="config-val" x-text="inst.status"></span></div>
+              <div class="config-row"><span class="config-key">Model</span><span class="config-val" x-text="inst.model?.split('/').pop()"></span></div>
+              <div class="config-row"><span class="config-key">Requests</span><span class="config-val" x-text="instanceStats[inst.id]?.requests || 0"></span></div>
+            </div>
+          </template>
         </div>
-      </template>
-      <div x-show="feed.length === 0" style="padding:16px;color:var(--text2);font-size:12px;">Waiting for events...</div>
-    </div>
-  </div>
+      </div>
+    </template>
 
+    <!-- ========== SETTINGS ========== -->
+    <template x-if="page==='settings'">
+      <div style="padding:40px; width:100%; overflow-y:auto;">
+        <h2 style="font-size:16px; margin-bottom:20px;">⚙️ Settings</h2>
+        <div class="card" style="max-width:600px;">
+          <div class="card-title">Instances</div>
+          <template x-for="inst in instances" :key="inst.id">
+            <div class="config-row" style="padding:8px 0;">
+              <span><span x-text="inst.emoji"></span> <span x-text="inst.name"></span></span>
+              <span class="config-val" x-text="inst.model"></span>
+            </div>
+          </template>
+        </div>
+      </div>
+    </template>
+
+  </div>
 </div>
 
 <script>
-function mc() {
+function app() {
   return {
-    connected: false,
-    ws: null,
-    clock: '', clockDate: '',
-    instances: [],
-    stats: {
-      costToday: 0, tokensToday: 0, dailyBudget: 5000000,
-      tokenBreakdown: [],
-      costWeekly: [], costWeekTotal: 0,
-    },
-    tasks: { queue: [], inProgress: [], done: [] },
-    conversations: [],
-    knowledge: { ragDocs: 0, memoryEntries: 0, lastSync: '-', learnings: [] },
-    feed: [],
-    feedTab: 'All',
-    feedTabs: ['All', 'Tasks', 'Errors', 'Comms'],
-    uptime: '0m',
-    startTime: Date.now(),
+    page: location.pathname.startsWith('/chat') ? 'chat' : 'dashboard',
+    connected: false, ws: null,
+    instances: [], instanceStats: {},
+    feed: [], feedTab: 'All',
+    // Chat
+    chatInstanceId: null, currentInstance: null,
+    chatMessages: [], chatInput: '', chatTyping: false, chatSearch: '',
+    lastMessages: {}, lastTimes: {},
+    // Helpers
     avatarColors: [
       'linear-gradient(135deg, #a855f7, #6366f1)',
       'linear-gradient(135deg, #06b6d4, #3b82f6)',
       'linear-gradient(135deg, #f97316, #ef4444)',
       'linear-gradient(135deg, #22c55e, #06b6d4)',
     ],
-    tokenColors: ['var(--accent)', 'var(--purple)', 'var(--cyan)', 'var(--green)', 'var(--orange)'],
+    tokenColors: ['var(--accent)', 'var(--purple)', 'var(--cyan)', 'var(--green)'],
 
-    get filteredFeed() {
-      if (this.feedTab === 'All') return this.feed;
-      return this.feed.filter(e => e.category === this.feedTab.toLowerCase());
+    get filteredInstances() {
+      if (!this.chatSearch) return this.instances;
+      const q = this.chatSearch.toLowerCase();
+      return this.instances.filter(i => i.name.toLowerCase().includes(q) || i.id.includes(q));
     },
+    get totalRequests() { return Object.values(this.instanceStats).reduce((a,s) => a + (s.requests||0), 0); },
+    get totalInputTokens() { return Object.values(this.instanceStats).reduce((a,s) => a + (s.inputTokens||0), 0); },
+    get totalOutputTokens() { return Object.values(this.instanceStats).reduce((a,s) => a + (s.outputTokens||0), 0); },
 
     init() {
-      this.updateClock();
-      setInterval(() => this.updateClock(), 1000);
-      setInterval(() => this.updateUptime(), 60000);
+      // Parse /chat/:id from URL
+      const parts = location.pathname.split('/');
+      if (parts[1] === 'chat' && parts[2]) {
+        this.page = 'chat';
+        this.chatInstanceId = parts[2];
+      }
       this.connectWs();
-    },
-
-    updateClock() {
-      const now = new Date();
-      this.clock = now.toLocaleTimeString('en-US', { hour12: false });
-      const days = ['SUN','MON','TUE','WED','THU','FRI','SAT'];
-      const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
-      this.clockDate = `${days[now.getDay()]}, ${months[now.getMonth()]} ${now.getDate()} ${now.getFullYear()}`;
-    },
-
-    updateUptime() {
-      const mins = Math.floor((Date.now() - this.startTime) / 60000);
-      if (mins < 60) this.uptime = mins + 'm';
-      else this.uptime = Math.floor(mins/60) + 'h ' + (mins%60) + 'm';
+      this.pollStats();
+      setInterval(() => this.pollStats(), 15000);
     },
 
     connectWs() {
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       this.ws = new WebSocket(`${proto}//${location.host}/ws`);
-      this.ws.onopen = () => { this.connected = true; };
-      this.ws.onclose = () => { this.connected = false; setTimeout(() => this.connectWs(), 3000); };
-      this.ws.onmessage = (e) => {
-        const msg = JSON.parse(e.data);
-        this.handleMsg(msg);
+      this.ws.onopen = () => {
+        this.connected = true;
+        if (this.chatInstanceId) this.ws.send(JSON.stringify({ type: 'join_chat', instanceId: this.chatInstanceId }));
       };
+      this.ws.onclose = () => { this.connected = false; setTimeout(() => this.connectWs(), 3000); };
+      this.ws.onmessage = (e) => this.handleMsg(JSON.parse(e.data));
     },
 
     handleMsg(msg) {
       if (msg.type === 'welcome') {
         this.instances = msg.instances || [];
+        this.currentInstance = this.instances.find(i => i.id === this.chatInstanceId);
+      } else if (msg.type === 'chat_history') {
+        this.chatMessages = msg.messages || [];
+        this.$nextTick(() => this.scrollChat());
+      } else if (msg.type === 'chat_message') {
+        this.chatMessages.push(msg.message);
+        if (msg.message.role === 'assistant') this.chatTyping = false;
+        // Update last message for chat list
+        this.lastMessages[msg.message.instanceId] = msg.message.text?.slice(0, 50) || '';
+        this.lastTimes[msg.message.instanceId] = this.fmtTime(msg.message.timestamp);
+        this.$nextTick(() => this.scrollChat());
       } else if (msg.type === 'event') {
         const evt = msg.data || {};
-        this.addFeedItem({
+        this.feed.unshift({
           agent: evt.id || evt.instanceId || 'System',
           initial: (evt.id || 'S')[0].toUpperCase(),
-          text: JSON.stringify(evt).slice(0, 200),
-          time: new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }),
-          color: msg.event?.includes('crash') || msg.event?.includes('error') ? 'var(--red)' :
-                 msg.event?.includes('spawn') ? 'var(--green)' : 'var(--accent)',
-          category: msg.event?.includes('error') || msg.event?.includes('crash') ? 'errors' :
-                    msg.event?.includes('task') ? 'tasks' : 'comms',
+          text: msg.event + ': ' + (evt.name || evt.message || JSON.stringify(evt).slice(0,100)),
+          time: this.fmtTime(Date.now()),
+          color: msg.event?.includes('crash') ? 'var(--red)' : msg.event?.includes('spawn') ? 'var(--green)' : 'var(--accent)',
         });
+        if (this.feed.length > 100) this.feed.pop();
         if (msg.event?.startsWith('instance.')) {
           fetch('/api/instances').then(r => r.json()).then(d => this.instances = d).catch(() => {});
         }
       }
     },
 
-    addFeedItem(item) {
-      this.feed.unshift(item);
-      if (this.feed.length > 100) this.feed.pop();
+    selectInstance(id) {
+      if (this.chatInstanceId && this.chatInstanceId !== id) {
+        this.ws?.send(JSON.stringify({ type: 'leave_chat' }));
+      }
+      this.chatInstanceId = id;
+      this.currentInstance = this.instances.find(i => i.id === id);
+      this.chatMessages = [];
+      this.chatTyping = false;
+      history.replaceState(null, '', '/chat/' + id);
+      this.ws?.send(JSON.stringify({ type: 'join_chat', instanceId: id }));
+      this.$nextTick(() => this.$refs.chatInputEl?.focus());
     },
 
-    formatNum(n) {
-      n = parseInt(n) || 0;
-      if (n >= 1000000) return (n/1000000).toFixed(1) + 'M';
-      if (n >= 1000) return (n/1000).toFixed(0) + 'K';
-      return String(n);
+    sendChat() {
+      const text = this.chatInput.trim();
+      if (!text || !this.chatInstanceId) return;
+      this.ws.send(JSON.stringify({ type: 'chat_message', instanceId: this.chatInstanceId, text }));
+      this.chatInput = '';
+      this.chatTyping = true;
     },
+
+    async pollStats() {
+      try {
+        const res = await fetch('/api/stats');
+        this.instanceStats = await res.json();
+      } catch {}
+    },
+
+    renderMd(text) { try { return marked.parse(text || ''); } catch { return text; } },
+    fmtTime(ts) { return new Date(ts).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }); },
+    formatNum(n) { n=parseInt(n)||0; if(n>=1e6) return (n/1e6).toFixed(1)+'M'; if(n>=1e3) return (n/1e3).toFixed(0)+'K'; return String(n); },
+    scrollChat() { const el = this.$refs.chatScroll; if (el) el.scrollTop = el.scrollHeight; },
   };
 }
 </script>
