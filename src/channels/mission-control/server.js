@@ -1,5 +1,6 @@
 import uWS from 'uWebSockets.js';
 import { readFile } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
@@ -287,6 +288,69 @@ export class MCServer {
           writeFileSync(cfgPath, yaml.dump(cfg));
           this.instanceManager.configManager.load();
           this._json(res, { ok: true, message: 'Restart instance to apply channel changes' });
+        } catch (e) {
+          res.cork(() => { res.writeStatus('400'); this._json(res, { error: e.message }); });
+        }
+      });
+    });
+
+    // --- Memory API ---
+    this.app.get('/api/instances/:id/memory', (res, req) => {
+      res.onAborted(() => {});
+      const inst = this.instanceManager.get(req.getParameter(0));
+      if (!inst?.memory) { this._json(res, { error: 'No memory' }); return; }
+      this._json(res, {
+        longTerm: inst.memory.getLongTermMemory(),
+        recent: inst.memory.getRecentMemories(7),
+        files: inst.memory.listFiles(),
+      });
+    });
+
+    this.app.post('/api/instances/:id/memory', (res, req) => {
+      res.onAborted(() => {});
+      const id = req.getParameter(0);
+      this._readBody(res, (body) => {
+        try {
+          const data = JSON.parse(body);
+          const inst = this.instanceManager.get(id);
+          if (!inst?.memory) throw new Error('No memory manager');
+          if (data.longTerm !== undefined) {
+            writeFileSync(inst.memory.longTermPath, data.longTerm);
+            inst.memory.longTermMemory = data.longTerm;
+          }
+          if (data.addEntry) inst.memory.addMemory(data.addEntry, data.category);
+          this._json(res, { ok: true });
+        } catch (e) {
+          res.cork(() => { res.writeStatus('400'); this._json(res, { error: e.message }); });
+        }
+      });
+    });
+
+    // --- Knowledge API ---
+    this.app.get('/api/instances/:id/knowledge', (res, req) => {
+      res.onAborted(() => {});
+      const inst = this.instanceManager.get(req.getParameter(0));
+      if (!inst?.knowledge) { this._json(res, { facts: [] }); return; }
+      this._json(res, { facts: inst.knowledge.list(), count: inst.knowledge.count() });
+    });
+
+    this.app.post('/api/instances/:id/knowledge', (res, req) => {
+      res.onAborted(() => {});
+      const id = req.getParameter(0);
+      this._readBody(res, (body) => {
+        try {
+          const data = JSON.parse(body);
+          const inst = this.instanceManager.get(id);
+          if (!inst?.knowledge) throw new Error('No knowledge manager');
+          if (data.action === 'add') {
+            const result = inst.knowledge.add({ tags: data.tags, fact: data.fact, id: data.id });
+            this._json(res, { ok: true, fact: result });
+          } else if (data.action === 'remove') {
+            inst.knowledge.remove(data.id);
+            this._json(res, { ok: true });
+          } else {
+            this._json(res, { error: 'Unknown action' });
+          }
         } catch (e) {
           res.cork(() => { res.writeStatus('400'); this._json(res, { error: e.message }); });
         }
