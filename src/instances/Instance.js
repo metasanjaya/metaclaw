@@ -493,7 +493,8 @@ export class Instance {
       return fallback;
     } catch (e) {
       console.error(`[Instance:${this.id}] AI error:`, e.message);
-      this.eventBus.emit('instance.error', { instanceId: this.id, error: e.message });
+      console.error(`[Instance:${this.id}] Stack:`, e.stack);
+      this.eventBus.emit('instance.error', { instanceId: this.id, error: e.message, stack: e.stack });
       return `⚠️ Error: ${e.message}`;
     }
   }
