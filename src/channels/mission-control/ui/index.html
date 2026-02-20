@@ -172,18 +172,18 @@
               </template>
             </div>
             <div class="card">
-              <div class="card-title"><span class="icon">🤖</span> Instance Details</div>
-              <template x-for="inst in instances" :key="inst.id">
-                <div style="padding:6px 0;border-bottom:1px solid var(--border);">
-                  <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-                    <span style="font-size:14px;" x-text="inst.emoji"></span>
-                    <span style="font-size:12px;font-weight:600;" x-text="inst.name"></span>
-                    <span style="margin-left:auto;font-size:10px;padding:2px 8px;border-radius:4px;" :style="inst.status==='running'?'background:rgba(34,197,94,0.15);color:var(--green)':'background:rgba(239,68,68,0.15);color:var(--red)'" x-text="inst.status"></span>
+              <div class="card-title"><span class="icon">📡</span> Channels</div>
+              <template x-for="(health, id) in (sysHealth.channels || {})" :key="id">
+                <div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);">
+                  <div class="dot" :class="health.status==='healthy' ? 'dot-green' : 'dot-red'"></div>
+                  <div style="flex:1;min-width:0;">
+                    <div style="font-size:12px;font-weight:600;" x-text="id"></div>
+                    <div style="font-size:10px;color:var(--text2);" x-text="health.message || health.status"></div>
                   </div>
-                  <div style="font-size:10px;color:var(--text2);" x-text="inst.model || 'no model'"></div>
-                  <div style="font-size:10px;color:var(--text2);" x-text="'Channels: ' + (inst.channels?.join(', ') || 'none')"></div>
+                  <span style="font-size:10px;padding:2px 8px;border-radius:4px;" :style="health.status==='healthy'?'background:rgba(34,197,94,0.1);color:var(--green)':'background:rgba(239,68,68,0.1);color:var(--red)'" x-text="health.status"></span>
                 </div>
               </template>
+              <div x-show="!sysHealth.channels || Object.keys(sysHealth.channels).length===0" style="font-size:11px;color:var(--text2);padding:8px 0;">Loading...</div>
             </div>
           </div>
 
