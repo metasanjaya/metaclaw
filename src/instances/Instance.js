@@ -110,15 +110,10 @@ export class Instance {
     }
     // Init tools, topics, RAG
     if (this.dataDir) {
-      // Kimi doesn't support tool calling properly - disable tools
-      if (this.model?.includes('kimi')) {
-        console.log(`[Instance:${this.id}] Tools disabled (Kimi model)`);
-      } else {
-        try {
-          this.tools = new ToolExecutor({ instance: this, config: this.config });
-          console.log(`[Instance:${this.id}] Tools initialized (${this.tools.getToolDefinitions().length} tools)`);
-        } catch (e) { console.error(`[Instance:${this.id}] Tools error:`, e.message); }
-      }
+      try {
+        this.tools = new ToolExecutor({ instance: this, config: this.config });
+        console.log(`[Instance:${this.id}] Tools initialized (${this.tools.getToolDefinitions().length} tools)`);
+      } catch (e) { console.error(`[Instance:${this.id}] Tools error:`, e.message); }
 
       try {
         this.topics = new TopicManager(this.dataDir);

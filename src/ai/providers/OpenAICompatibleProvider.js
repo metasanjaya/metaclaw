@@ -19,6 +19,8 @@ export class OpenAICompatibleProvider extends BaseProvider {
 
     this.name = providerName;
     this.defaultModel = config.defaultModel || preset.defaultModel;
+    // Kimi: default reasoning false (thinking mode causes issues with tools)
+    this.reasoning = providerName === 'kimi' ? false : (config.reasoning !== false);
     this.client = new OpenAI({
       apiKey: config.apiKey || process.env[preset.envKey],
       baseURL: config.baseURL || preset.baseURL,
@@ -34,7 +36,7 @@ export class OpenAICompatibleProvider extends BaseProvider {
 
   async chatWithTools(messages, tools, options = {}) {
     let { model = this.defaultModel, maxTokens = 1000, temperature = 0.7, toolChoice } = options;
-    if (this.name === 'kimi') temperature = 1;
+    if (this.name === 'kimi') temperature = 0.6;
 
     // Map toolChoice from internal format to OpenAI format
     // Kimi: tool_choice 'required' is incompatible with thinking — fall back to 'auto'
@@ -81,10 +83,11 @@ export class OpenAICompatibleProvider extends BaseProvider {
     if (this.name !== 'kimi') {
       createOpts.tool_choice = openaiToolChoice;
     }
-    // Kimi: disable thinking when using tools (incompatible)
+    // Kimi: handle thinking/reasoning mode
     if (this.name === 'kimi') {
-      createOpts.thinking = { type: 'disabled' };
-      console.log(`[Kimi] createOpts.thinking:`, JSON.stringify(createOpts.thinking));
+      if (!this.reasoning) {
+        createOpts.thinking = { type: 'disabled' };
+      }
     }
     // Kimi: ALL assistant messages need reasoning_content when thinking is enabled (avoid 400 error)
     if (this.name === 'kimi') {
