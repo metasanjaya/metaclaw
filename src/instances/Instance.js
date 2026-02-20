@@ -7,6 +7,7 @@ import { RAGEngine } from './RAGEngine.js';
 import { StatsTracker } from './StatsTracker.js';
 import { AutoMemory } from './AutoMemory.js';
 import { LessonLearner } from './LessonLearner.js';
+import { Scheduler } from './Scheduler.js';
 import { EmbeddingManager } from '../ai/EmbeddingManager.js';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -58,6 +59,8 @@ export class Instance {
     this.autoMemory = null;
     /** @type {LessonLearner|null} */
     this.lessonLearner = null;
+    /** @type {Scheduler|null} */
+    this.scheduler = null;
 
     /** @type {{inputTokens:number, outputTokens:number, cost:number, requests:number}} */
     this.stats = { inputTokens: 0, outputTokens: 0, cost: 0, requests: 0, totalMessages: 0 };
@@ -165,6 +168,18 @@ export class Instance {
       } catch (e) { console.error(`[Instance:${this.id}] LessonLearner error:`, e.message); }
     }
 
+    // Scheduler
+    if (this.dataDir) {
+      try {
+        this.scheduler = new Scheduler({
+          instanceDir: this.dataDir, instanceId: this.id,
+          eventBus: this.eventBus, router: this.router,
+        });
+        this.scheduler.start();
+        console.log(`[Instance:${this.id}] Scheduler initialized (${this.scheduler.getStats().totalJobs} jobs)`);
+      } catch (e) { console.error(`[Instance:${this.id}] Scheduler error:`, e.message); }
+    }
+
     // Load stats from DB
     if (this.chatStore) {
       try {
@@ -185,6 +200,7 @@ export class Instance {
     if (this.statsTracker) this.statsTracker.flush();
     if (this.lessonLearner) this.lessonLearner.flush();
     if (this.autoMemory) this.autoMemory.destroy();
+    if (this.scheduler) this.scheduler.stop();
     this.eventBus.emit('instance.stop', { id: this.id });
     this.status = 'stopped';
     console.log(`[Instance:${this.id}] Stopped`);
@@ -331,6 +347,9 @@ export class Instance {
     const systemPrompt = await this._buildSystemPrompt(msg.text, chatId);
     const tools = this.tools?.getToolDefinitions() || [];
 
+    // Set chat context for tools (scheduler needs chatId)
+    if (this.tools) this.tools.setChatContext(chatId);
+
     console.log(`[Instance:${this.id}] Processing message from ${msg.senderId} (${conversation.length} msgs, ${tools.length} tools)`);
 
     try {
@@ -449,6 +468,7 @@ export class Instance {
       statsToday: this.statsTracker?.getTodayData() || null,
       autoMemory: this.autoMemory?.getStats() || null,
       lessons: this.lessonLearner?.getStats() || null,
+      scheduler: this.scheduler?.getStats() || null,
     };
   }
 }

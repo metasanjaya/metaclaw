@@ -143,6 +143,37 @@ export class ToolExecutor {
           required: ['text'],
         },
       },
+      {
+        name: 'schedule',
+        description: 'Create a reminder or scheduled task. Supports one-shot and repeating schedules.',
+        params: {
+          type: 'object',
+          properties: {
+            message: { type: 'string', description: 'Reminder text or task description' },
+            delayMs: { type: 'number', description: 'Delay from now in milliseconds (e.g. 300000 for 5min)' },
+            triggerAt: { type: 'number', description: 'Exact trigger time as Unix ms (alternative to delayMs)' },
+            repeatMs: { type: 'number', description: 'Repeat interval in ms (null for one-shot)' },
+            type: { type: 'string', enum: ['direct', 'agent', 'check'], description: 'direct=send message, agent=AI processes it, check=run command first' },
+            command: { type: 'string', description: 'Shell command (for type check)' },
+            condition: { type: 'string', description: 'Condition for check type (e.g. "contains:error", "!=200")' },
+          },
+          required: ['message'],
+        },
+      },
+      {
+        name: 'schedule_list',
+        description: 'List all scheduled reminders and tasks.',
+        params: { type: 'object', properties: {} },
+      },
+      {
+        name: 'schedule_remove',
+        description: 'Remove a scheduled job by ID.',
+        params: {
+          type: 'object',
+          properties: { id: { type: 'string', description: 'Job ID to remove' } },
+          required: ['id'],
+        },
+      },
     ];
   }
 
@@ -163,6 +194,9 @@ export class ToolExecutor {
         case 'ls': return await this._ls(input.path);
         case 'knowledge': return this._knowledge(input);
         case 'remember': return this._remember(input);
+        case 'schedule': return this._schedule(input);
+        case 'schedule_list': return this._scheduleList();
+        case 'schedule_remove': return this._scheduleRemove(input.id);
         default: return `Unknown tool: ${name}`;
       }
     } catch (e) {
@@ -265,5 +299,54 @@ export class ToolExecutor {
     }
     mm.addMemory(input.text, input.category);
     return `Saved to daily log${input.category ? ` [${input.category}]` : ''}`;
+  }
+
+  _schedule(input) {
+    const sched = this.instance?.scheduler;
+    if (!sched) return 'No scheduler available';
+
+    const triggerAt = input.triggerAt || (Date.now() + (input.delayMs || 300_000));
+    const id = sched.add({
+      chatId: this._currentChatId || this.instance.id,
+      message: input.message,
+      triggerAt,
+      repeatMs: input.repeatMs || null,
+      type: input.type || 'direct',
+      command: input.command || null,
+      condition: input.condition || null,
+    });
+
+    const when = new Date(triggerAt);
+    const repeat = input.repeatMs ? ` (repeats every ${sched._fmtMs(input.repeatMs)})` : '';
+    return `✅ Scheduled: "${input.message}" at ${when.toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}${repeat} [id: ${id.slice(0, 8)}]`;
+  }
+
+  _scheduleList() {
+    const sched = this.instance?.scheduler;
+    if (!sched) return 'No scheduler';
+    const jobs = sched.listAll();
+    if (!jobs.length) return 'No scheduled jobs.';
+
+    return jobs.map(j => {
+      const when = new Date(j.triggerAt).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+      const repeat = j.repeatMs ? ` (every ${sched._fmtMs(j.repeatMs)})` : '';
+      const type = j.type !== 'direct' ? ` [${j.type}]` : '';
+      return `• ${j.id.slice(0, 8)} — "${j.message}" at ${when}${repeat}${type}`;
+    }).join('\n');
+  }
+
+  _scheduleRemove(id) {
+    const sched = this.instance?.scheduler;
+    if (!sched) return 'No scheduler';
+    // Support partial ID match
+    const full = sched.jobs.find(j => j.id.startsWith(id));
+    if (!full) return `Job not found: ${id}`;
+    sched.remove(full.id);
+    return `✅ Removed: "${full.message}"`;
+  }
+
+  /** Set current chat context (called before execute) */
+  setChatContext(chatId) {
+    this._currentChatId = chatId;
   }
 }
