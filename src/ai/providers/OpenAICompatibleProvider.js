@@ -23,10 +23,20 @@ export class OpenAICompatibleProvider extends BaseProvider {
     this.reasoning = providerName === 'kimi' ? false : (config.reasoning !== false);
     // Temperature: use config or provider default
     this.temperature = config.temperature ?? (providerName === 'kimi' ? 0.6 : 0.7);
-    this.client = new OpenAI({
-      apiKey: config.apiKey || process.env[preset.envKey],
-      baseURL: config.baseURL || preset.baseURL,
-    });
+    this.apiKey = config.apiKey || process.env[preset.envKey];
+    this.baseURL = config.baseURL || preset.baseURL;
+    // Lazy initialization of client
+    this._client = null;
+  }
+
+  _getClient() {
+    if (!this._client) {
+      this._client = new OpenAI({
+        apiKey: this.apiKey,
+        baseURL: this.baseURL,
+      });
+    }
+    return this._client;
   }
 
   async chat(messages, options = {}) {
