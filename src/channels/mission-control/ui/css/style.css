@@ -285,6 +285,37 @@ body { font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', 'Courier New', mon
 .card .config-row:last-child { border-bottom: none; }
 .bg-tertiary { background: var(--bg); }
 
+/* Modals */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+  backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
+  z-index: 9999; display: flex; align-items: center; justify-content: center;
+}
+.modal-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 24px; width: 440px; max-width: 90vw; box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+.modal-input {
+  width: 100%; padding: 8px 12px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text); font-family: inherit; font-size: 13px; outline: none;
+}
+.modal-input:focus { border-color: var(--accent); }
+.modal-btn-cancel {
+  padding: 8px 16px; background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text2); cursor: pointer; font-family: inherit; font-size: 12px;
+}
+.modal-btn-cancel:hover { color: var(--text); border-color: var(--text2); }
+.modal-btn-primary {
+  padding: 8px 20px; background: var(--accent); border: none; border-radius: 8px;
+  color: white; cursor: pointer; font-family: inherit; font-size: 12px; font-weight: 600;
+}
+.modal-btn-primary:hover { opacity: 0.9; }
+.modal-btn-danger {
+  padding: 8px 20px; background: var(--red); border: none; border-radius: 8px;
+  color: white; cursor: pointer; font-family: inherit; font-size: 12px; font-weight: 600;
+}
+.modal-btn-danger:hover { opacity: 0.9; }
+
 /* Responsive */
 @media (max-width: 1024px) {
   .dashboard-layout { grid-template-columns: 1fr; }
