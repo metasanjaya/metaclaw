@@ -399,6 +399,7 @@ export class ToolExecutor {
 
     const id = sched.add({
       chatId: this._currentChatId || this.instance.id,
+      channelId: this._currentChannelId,
       message: input.message,
       at: input.at,
       delayMs: input.delayMs,
@@ -442,8 +443,9 @@ export class ToolExecutor {
   }
 
   /** Set current chat context (called before execute) */
-  setChatContext(chatId) {
+  setChatContext(chatId, channelId) {
     this._currentChatId = chatId;
+    this._currentChannelId = channelId || 'mission-control';
   }
 
   // ===== Spawn (sub-agents) =====
@@ -457,7 +459,7 @@ export class ToolExecutor {
       label: input.label,
       timeoutMs: input.timeoutMs,
       parentChatId: this._currentChatId || this.instance.id,
-      parentChannelId: 'mission-control',
+      parentChannelId: this._currentChannelId,
     });
     return `✅ Spawned sub-agent: ${id} — "${(input.label || input.task).slice(0, 60)}"`;
   }
@@ -493,7 +495,7 @@ export class ToolExecutor {
       command: input.command,
       timeoutMs: input.timeoutMs,
       chatId: this._currentChatId || this.instance.id,
-      channelId: 'mission-control',
+      channelId: this._currentChannelId,
     });
     return `✅ Background process started: ${id}\nCommand: ${input.command.slice(0, 80)}\nUse bg_poll("${id}") to check status.`;
   }

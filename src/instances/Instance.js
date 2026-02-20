@@ -367,8 +367,8 @@ export class Instance {
     const systemPrompt = await this._buildSystemPrompt(msg.text, chatId);
     const tools = this.tools?.getToolDefinitions() || [];
 
-    // Set chat context for tools (scheduler needs chatId)
-    if (this.tools) this.tools.setChatContext(chatId);
+    // Set chat context for tools (scheduler/spawner need chatId + channelId)
+    if (this.tools) this.tools.setChatContext(chatId, msg.channelId);
 
     console.log(`[Instance:${this.id}] Processing message from ${msg.senderId} (${conversation.length} msgs, ${tools.length} tools)`);
 
