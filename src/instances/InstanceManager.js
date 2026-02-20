@@ -91,6 +91,30 @@ export class InstanceManager {
   }
 
   /**
+   * Delete an instance (stop, remove from memory, trash directory)
+   * @param {string} id
+   */
+  async delete(id) {
+    const instance = this.instances.get(id);
+    if (!instance) throw new Error(`Instance not found: ${id}`);
+    // Stop if running
+    if (instance.status === 'running') await instance.stop();
+    this.instances.delete(id);
+    this.configManager.instances.delete(id);
+    // Move directory to trash instead of deleting
+    const { join } = await import('node:path');
+    const { existsSync, renameSync, mkdirSync } = await import('node:fs');
+    const dir = join(this.configManager.baseDir, 'instances', id);
+    const trashDir = join(this.configManager.baseDir, '.trash');
+    if (existsSync(dir)) {
+      mkdirSync(trashDir, { recursive: true });
+      renameSync(dir, join(trashDir, `${id}_${Date.now()}`));
+    }
+    this.eventBus.emit('instance.stop', { id, name: instance.name, emoji: instance.emoji });
+    console.log(`[InstanceManager] Deleted instance: ${id}`);
+  }
+
+  /**
    * Get instance by ID
    * @param {string} id
    * @returns {Instance|undefined}

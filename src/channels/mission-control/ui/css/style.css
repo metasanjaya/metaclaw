@@ -257,6 +257,14 @@ body { font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', 'Courier New', mon
 .stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--text2); margin-bottom: 6px; }
 .stat-value { font-size: 22px; font-weight: 700; color: var(--text); }
 
+/* Delete button on instance cards */
+.del-btn {
+  background: none; border: none; color: var(--text2); cursor: pointer; font-size: 12px;
+  padding: 4px 6px; border-radius: 4px; opacity: 0; transition: all 0.15s;
+}
+.agent-card:hover .del-btn { opacity: 0.6; }
+.del-btn:hover { opacity: 1 !important; color: var(--red); background: rgba(239,68,68,0.1); }
+
 /* Quick chat row */
 .quick-chat-row {
   display: flex; align-items: center; gap: 10px; padding: 8px 0;

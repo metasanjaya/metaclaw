@@ -59,9 +59,12 @@
                 </div>
                 <div class="dot" :class="inst.status === 'running' ? 'dot-green' : 'dot-red'"></div>
               </div>
-              <div class="agent-metrics">
-                <div class="agent-metric">📨 <span x-text="instanceStats[inst.id]?.requests || 0"></span></div>
-                <div class="agent-metric">💬 <span x-text="instanceStats[inst.id]?.totalMessages || 0"></span></div>
+              <div style="display:flex;align-items:center;justify-content:space-between;">
+                <div class="agent-metrics">
+                  <div class="agent-metric">📨 <span x-text="instanceStats[inst.id]?.requests || 0"></span></div>
+                  <div class="agent-metric">💬 <span x-text="instanceStats[inst.id]?.totalMessages || 0"></span></div>
+                </div>
+                <button @click.stop="confirmDelete(inst)" class="del-btn" title="Delete instance">🗑️</button>
               </div>
             </div>
           </template>
@@ -303,6 +306,27 @@
         </div>
       </div>
     </template>
+
+    <!-- Delete Instance Confirm Modal -->
+    <div x-show="showDeleteConfirm" x-transition.opacity style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1001;display:flex;align-items:center;justify-content:center;" @click.self="showDeleteConfirm=false" @keydown.escape.window="showDeleteConfirm=false">
+      <div class="card" style="width:400px;max-width:90vw;" @click.stop>
+        <div style="text-align:center;margin-bottom:16px;">
+          <div style="font-size:40px;margin-bottom:8px;" x-text="deleteTarget?.emoji || '🤖'"></div>
+          <h3 style="font-size:15px;font-weight:600;">Delete <span x-text="deleteTarget?.name || ''"></span>?</h3>
+        </div>
+        <p style="font-size:12px;color:var(--text2);text-align:center;margin-bottom:16px;line-height:1.6;">
+          This will permanently delete the instance, its config, memory, and all chat history. This cannot be undone.
+        </p>
+        <div x-show="deleteError" style="font-size:12px;color:var(--red);padding:6px 10px;background:rgba(239,68,68,0.1);border-radius:6px;margin-bottom:12px;text-align:center;" x-text="deleteError"></div>
+        <div style="display:flex;gap:8px;justify-content:center;">
+          <button @click="showDeleteConfirm=false" style="padding:8px 20px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text2);cursor:pointer;font-family:inherit;font-size:12px;">Cancel</button>
+          <button @click="deleteInstance()" :disabled="deleteLoading" style="padding:8px 20px;background:var(--red);border:none;border-radius:8px;color:white;cursor:pointer;font-family:inherit;font-size:12px;font-weight:600;" :style="deleteLoading?'opacity:0.5;cursor:not-allowed':''">
+            <span x-show="!deleteLoading">Delete</span>
+            <span x-show="deleteLoading">Deleting...</span>
+          </button>
+        </div>
+      </div>
+    </div>
 
     <!-- ========== CHAT (WhatsApp/Telegram style) ========== -->
     <template x-if="page==='chat'">
@@ -615,6 +639,8 @@ function app() {
     // Add Instance
     showAddInstance: false, addInstanceLoading: false, addInstanceError: '',
     newInstance: { name: '', emoji: '🤖', model: 'anthropic/claude-sonnet-4-6', personality: '' },
+    // Delete Instance
+    showDeleteConfirm: false, deleteTarget: null, deleteLoading: false, deleteError: '',
     // Chat
     chatInstanceId: null, currentInstance: null,
     chatMessages: [], chatInput: '', chatTyping: false, chatSearch: '',
@@ -747,6 +773,35 @@ function app() {
       this.ws.send(JSON.stringify({ type: 'chat_message', instanceId: this.chatInstanceId, text }));
       this.chatInput = '';
       this.chatTyping = true;
+    },
+
+    confirmDelete(inst) {
+      this.deleteTarget = inst;
+      this.deleteError = '';
+      this.showDeleteConfirm = true;
+    },
+
+    async deleteInstance() {
+      if (!this.deleteTarget) return;
+      this.deleteLoading = true;
+      this.deleteError = '';
+      try {
+        const res = await fetch(`/api/instances/${this.deleteTarget.id}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed');
+        this.instances = data.instances || this.instances.filter(i => i.id !== this.deleteTarget.id);
+        if (this.chatInstanceId === this.deleteTarget.id) {
+          this.chatInstanceId = null;
+          this.currentInstance = null;
+          this.chatMessages = [];
+        }
+        this.showDeleteConfirm = false;
+        this.deleteTarget = null;
+      } catch (e) {
+        this.deleteError = e.message;
+      } finally {
+        this.deleteLoading = false;
+      }
     },
 
     async createInstance() {

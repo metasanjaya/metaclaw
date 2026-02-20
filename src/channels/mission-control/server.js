@@ -75,6 +75,17 @@ export class MCServer {
       });
     });
 
+    this.app.del('/api/instances/:id', async (res, req) => {
+      res.onAborted(() => {});
+      const id = req.getParameter(0);
+      try {
+        await this.instanceManager.delete(id);
+        this._json(res, { ok: true, instances: this.instanceManager.list() });
+      } catch (e) {
+        res.cork(() => { res.writeStatus('400'); this._json(res, { error: e.message }); });
+      }
+    });
+
     this.app.get('/api/health', async (res) => {
       res.onAborted(() => {});
       const health = this.instanceManager.healthCheckAll();
