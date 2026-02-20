@@ -64,7 +64,10 @@
                   <div class="agent-metric">📨 <span x-text="instanceStats[inst.id]?.requests || 0"></span></div>
                   <div class="agent-metric">💬 <span x-text="instanceStats[inst.id]?.totalMessages || 0"></span></div>
                 </div>
-                <button @click.stop="confirmDelete(inst)" class="del-btn" title="Delete instance">🗑️</button>
+                <div class="instance-actions">
+                  <button @click.stop="confirmRestart(inst)" class="action-btn restart-btn" title="Restart instance">🔄</button>
+                  <button @click.stop="confirmDelete(inst)" class="action-btn del-btn" title="Delete instance">🗑️</button>
+                </div>
               </div>
             </div>
           </template>
@@ -538,6 +541,27 @@
   </div>
 </div>
 
+<!-- Restart Instance Modal -->
+<div x-show="showRestartConfirm" x-transition.opacity class="modal-overlay" @click.self="showRestartConfirm=false" @keydown.escape.window="showRestartConfirm=false">
+  <div class="modal-card" style="width:400px;" @click.stop>
+    <div style="text-align:center;margin-bottom:16px;">
+      <div style="font-size:40px;margin-bottom:8px;" x-text="restartTarget?.emoji || '🤖'"></div>
+      <h3 style="font-size:15px;font-weight:600;">Restart <span x-text="restartTarget?.name || ''"></span>?</h3>
+    </div>
+    <p style="font-size:12px;color:var(--text2);text-align:center;margin-bottom:16px;line-height:1.6;">
+      This will stop and restart the instance. Active conversations will be interrupted briefly.
+    </p>
+    <div x-show="restartError" style="font-size:12px;color:var(--red);padding:6px 10px;background:rgba(239,68,68,0.1);border-radius:6px;margin-bottom:12px;text-align:center;" x-text="restartError"></div>
+    <div style="display:flex;gap:8px;justify-content:center;">
+      <button @click="showRestartConfirm=false" class="modal-btn-cancel">Cancel</button>
+      <button @click="restartInstance()" :disabled="restartLoading" class="modal-btn-primary" :style="restartLoading?'opacity:0.5;cursor:not-allowed':''">
+        <span x-show="!restartLoading">Restart</span>
+        <span x-show="restartLoading">Restarting...</span>
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- Delete Instance Modal -->
 <div x-show="showDeleteConfirm" x-transition.opacity class="modal-overlay" @click.self="showDeleteConfirm=false" @keydown.escape.window="showDeleteConfirm=false">
   <div class="modal-card" style="width:400px;" @click.stop>
@@ -637,6 +661,8 @@ function app() {
     newInstance: { name: '', emoji: '🤖', model: 'anthropic/claude-sonnet-4-6', personality: '' },
     // Delete Instance
     showDeleteConfirm: false, deleteTarget: null, deleteLoading: false, deleteError: '',
+    // Restart Instance
+    showRestartConfirm: false, restartTarget: null, restartLoading: false, restartError: '',
     // Chat
     chatInstanceId: null, currentInstance: null,
     chatMessages: [], chatInput: '', chatTyping: false, chatSearch: '',
@@ -774,6 +800,30 @@ function app() {
       this.ws.send(JSON.stringify({ type: 'chat_message', instanceId: this.chatInstanceId, text }));
       this.chatInput = '';
       this.chatTyping = true;
+    },
+
+    confirmRestart(inst) {
+      this.restartTarget = inst;
+      this.restartError = '';
+      this.showRestartConfirm = true;
+    },
+
+    async restartInstance() {
+      if (!this.restartTarget) return;
+      this.restartLoading = true;
+      this.restartError = '';
+      try {
+        const res = await fetch(`/api/instances/${this.restartTarget.id}/restart`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed');
+        this.instances = data.instances || this.instances;
+        this.showRestartConfirm = false;
+        this.restartTarget = null;
+      } catch (e) {
+        this.restartError = e.message;
+      } finally {
+        this.restartLoading = false;
+      }
     },
 
     confirmDelete(inst) {
