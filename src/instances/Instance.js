@@ -362,6 +362,14 @@ export class Instance {
         this.chatStore.clearChat(chatId);
         console.log(`[Instance:${this.id}] Cleared conversation for chat ${chatId}`);
       }
+      // Send response through eventBus
+      this.eventBus.emit('instance.response', {
+        instanceId: this.id,
+        chatId,
+        text: '✅ Conversation cleared.',
+        model: this.model,
+        channelId: msg.channelId,
+      });
       return '✅ Conversation cleared.';
     }
 
@@ -412,7 +420,7 @@ export class Instance {
           const text = response.text || '';
           this._trackStats(totalIn, totalOut, msg);
           const metadata = response.reasoningContent ? { reasoningContent: response.reasoningContent } : null;
-          this._persistResponse(chatId, text, metadata);
+          this._persistResponse(chatId, text, metadata, msg.channelId);
           this._reindexIfNeeded();
           return text;
         }
@@ -497,11 +505,11 @@ export class Instance {
     }
   }
 
-  _persistResponse(chatId, text, metadata = null) {
+  _persistResponse(chatId, text, metadata = null, channelId = null) {
     if (this.chatStore) {
       this.chatStore.save({ id: crypto.randomUUID(), chatId, role: 'assistant', text, timestamp: Date.now(), metadata });
     }
-    this.eventBus.emit('instance.response', { instanceId: this.id, chatId, text, model: this.model });
+    this.eventBus.emit('instance.response', { instanceId: this.id, chatId, text, model: this.model, channelId });
   }
 
   _reindexIfNeeded() {
