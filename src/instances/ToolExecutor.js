@@ -145,17 +145,20 @@ export class ToolExecutor {
       },
       {
         name: 'schedule',
-        description: 'Create a reminder or scheduled task. Supports one-shot and repeating schedules.',
+        description: 'Create a reminder or scheduled task. Supports: one-shot (at/delayMs), recurring (everyMs), cron expressions.',
         params: {
           type: 'object',
           properties: {
             message: { type: 'string', description: 'Reminder text or task description' },
-            delayMs: { type: 'number', description: 'Delay from now in milliseconds (e.g. 300000 for 5min)' },
-            triggerAt: { type: 'number', description: 'Exact trigger time as Unix ms (alternative to delayMs)' },
-            repeatMs: { type: 'number', description: 'Repeat interval in ms (null for one-shot)' },
+            at: { type: 'string', description: 'Trigger time: ISO 8601 ("2026-02-20T17:00:00+07:00"), or relative ("5m", "1h", "30s")' },
+            delayMs: { type: 'number', description: 'Delay from now in ms (alternative to at)' },
+            everyMs: { type: 'number', description: 'Repeat interval in ms (e.g. 3600000 for 1h)' },
+            cron: { type: 'string', description: 'Cron expression (e.g. "0 7 * * *" for daily 7am, "*/5 * * * *" for every 5min)' },
+            tz: { type: 'string', description: 'Timezone for cron (e.g. "Asia/Jakarta"). Default: server timezone' },
             type: { type: 'string', enum: ['direct', 'agent', 'check'], description: 'direct=send message, agent=AI processes it, check=run command first' },
             command: { type: 'string', description: 'Shell command (for type check)' },
             condition: { type: 'string', description: 'Condition for check type (e.g. "contains:error", "!=200")' },
+            deleteAfterRun: { type: 'boolean', description: 'Delete one-shot jobs after execution (default true)' },
           },
           required: ['message'],
         },
@@ -375,20 +378,23 @@ export class ToolExecutor {
     const sched = this.instance?.scheduler;
     if (!sched) return 'No scheduler available';
 
-    const triggerAt = input.triggerAt || (Date.now() + (input.delayMs || 300_000));
     const id = sched.add({
       chatId: this._currentChatId || this.instance.id,
       message: input.message,
-      triggerAt,
-      repeatMs: input.repeatMs || null,
+      at: input.at,
+      delayMs: input.delayMs,
+      everyMs: input.everyMs,
+      cron: input.cron,
+      tz: input.tz,
       type: input.type || 'direct',
       command: input.command || null,
       condition: input.condition || null,
+      deleteAfterRun: input.deleteAfterRun,
     });
 
-    const when = new Date(triggerAt);
-    const repeat = input.repeatMs ? ` (repeats every ${sched._fmtMs(input.repeatMs)})` : '';
-    return `✅ Scheduled: "${input.message}" at ${when.toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}${repeat} [id: ${id.slice(0, 8)}]`;
+    const job = sched.jobs.find(j => j.id === id);
+    const desc = job ? sched._describeSchedule(job.schedule) : 'scheduled';
+    return `✅ Scheduled: "${input.message}" — ${desc} [id: ${id.slice(0, 8)}]`;
   }
 
   _scheduleList() {
@@ -398,10 +404,11 @@ export class ToolExecutor {
     if (!jobs.length) return 'No scheduled jobs.';
 
     return jobs.map(j => {
-      const when = new Date(j.triggerAt).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
-      const repeat = j.repeatMs ? ` (every ${sched._fmtMs(j.repeatMs)})` : '';
+      const desc = sched._describeSchedule(j.schedule);
+      const enabled = j.enabled ? '' : ' [disabled]';
       const type = j.type !== 'direct' ? ` [${j.type}]` : '';
-      return `• ${j.id.slice(0, 8)} — "${j.message}" at ${when}${repeat}${type}`;
+      const runs = j.runCount ? ` (${j.runCount} runs)` : '';
+      return `• ${j.id.slice(0, 8)} — "${j.message}" ${desc}${type}${enabled}${runs}`;
     }).join('\n');
   }
 
