@@ -430,8 +430,30 @@ export class Instance {
           assistantMsg.reasoning_content = response.reasoningContent ?? '';
         }
         workingMessages.push(assistantMsg);
+        // Persist tool round assistant message to ChatStore
+        if (this.chatStore) {
+          this.chatStore.save({
+            id: crypto.randomUUID(),
+            chatId,
+            role: 'assistant',
+            text: response.text || '',
+            metadata: JSON.stringify({ toolCalls: response.toolCalls, reasoningContent: response.reasoningContent }),
+            timestamp: Date.now(),
+          });
+        }
         for (const tr of toolResults) {
           workingMessages.push({ role: 'tool', tool_call_id: tr.id, content: tr.result });
+          // Persist tool message to ChatStore
+          if (this.chatStore) {
+            this.chatStore.save({
+              id: crypto.randomUUID(),
+              chatId,
+              role: 'tool',
+              text: tr.result,
+              metadata: JSON.stringify({ toolCallId: tr.id }),
+              timestamp: Date.now(),
+            });
+          }
         }
       }
 

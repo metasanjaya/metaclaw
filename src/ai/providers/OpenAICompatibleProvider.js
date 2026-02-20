@@ -81,10 +81,6 @@ export class OpenAICompatibleProvider extends BaseProvider {
     if (this.name !== 'kimi') {
       createOpts.tool_choice = openaiToolChoice;
     }
-    // Kimi: disable thinking mode when using tools (incompatible)
-    if (this.name === 'kimi') {
-      createOpts.extra_body = { thinking: { type: 'disabled' } };
-    }
     // Kimi: ALL assistant messages need reasoning_content when thinking is enabled (avoid 400 error)
     if (this.name === 'kimi') {
       for (const msg of openaiMessages) {

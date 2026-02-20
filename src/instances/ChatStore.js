@@ -70,18 +70,29 @@ export class ChatStore {
    * Get conversation messages for AI context (oldest first)
    * @param {string} chatId
    * @param {number} limit
-   * @returns {Array<{role:string, content:string, reasoning_content?:string}>}
+   * @returns {Array<{role:string, content:string, reasoning_content?:string, tool_calls?:Array, tool_call_id?:string}>}
    */
   getConversation(chatId, limit = 50) {
     const rows = this._getConvStmt.all(chatId, limit);
     return rows.map(row => {
       const msg = { role: row.role, content: row.content };
-      // Extract reasoning_content from metadata if present
       if (row.metadata) {
         try {
           const meta = JSON.parse(row.metadata);
+          // Extract reasoning_content for assistant messages
           if (meta.reasoningContent !== undefined) {
             msg.reasoning_content = meta.reasoningContent;
+          }
+          // Extract tool_calls for assistant messages with tools
+          if (meta.toolCalls) {
+            msg.tool_calls = meta.toolCalls.map(tc => ({
+              id: tc.id,
+              function: tc.function,
+            }));
+          }
+          // Extract tool_call_id for tool messages
+          if (meta.toolCallId) {
+            msg.tool_call_id = meta.toolCallId;
           }
         } catch {}
       }
