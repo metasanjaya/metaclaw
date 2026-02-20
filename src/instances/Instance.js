@@ -1,9 +1,8 @@
 import { ChatStore } from './ChatStore.js';
+import { MemoryManager } from './MemoryManager.js';
+import { KnowledgeManager } from './KnowledgeManager.js';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-
-const require_fs = { readFileSync, existsSync };
-const require_path = { join };
 
 /**
  * Represents a single MetaClaw instance (independent agent).
@@ -36,6 +35,11 @@ export class Instance {
     /** @type {ChatStore|null} */
     this.chatStore = null;
 
+    /** @type {MemoryManager|null} */
+    this.memory = null;
+    /** @type {KnowledgeManager|null} */
+    this.knowledge = null;
+
     /** @type {{inputTokens:number, outputTokens:number, cost:number, requests:number}} */
     this.stats = { inputTokens: 0, outputTokens: 0, cost: 0, requests: 0, totalMessages: 0 };
   }
@@ -58,6 +62,22 @@ export class Instance {
         console.log(`[Instance:${this.id}] Chat store initialized`);
       } catch (e) {
         console.error(`[Instance:${this.id}] Chat store error:`, e.message);
+      }
+    }
+    // Init memory + knowledge managers
+    if (this.dataDir) {
+      try {
+        this.memory = new MemoryManager(this.dataDir);
+        this.memory.initialize();
+        console.log(`[Instance:${this.id}] Memory initialized (${this.memory.dailyLogs.size} daily logs)`);
+      } catch (e) {
+        console.error(`[Instance:${this.id}] Memory error:`, e.message);
+      }
+      try {
+        this.knowledge = new KnowledgeManager(this.dataDir);
+        console.log(`[Instance:${this.id}] Knowledge initialized (${this.knowledge.count()} facts)`);
+      } catch (e) {
+        console.error(`[Instance:${this.id}] Knowledge error:`, e.message);
       }
     }
     // Load stats from DB
@@ -86,23 +106,66 @@ export class Instance {
    * Build system prompt from identity
    * @returns {string}
    */
-  _buildSystemPrompt() {
-    const { readFileSync, existsSync } = require_fs;
-    const parts = [`You are ${this.name}.`];
+  /**
+   * Build system prompt with full personality stack:
+   * 1. Identity (name, personality)
+   * 2. SOUL.md (deep personality)
+   * 3. WORKFLOW.md (system rules, read-only)
+   * 4. MY_RULES.md (learned rules)
+   * 5. Memory context (long-term + recent daily)
+   * 6. Knowledge (relevant facts injected per query)
+   */
+  _buildSystemPrompt(userMessage = '') {
+    const parts = [];
+    const dir = this.config._dir;
+
+    // 1. Identity
+    parts.push(`You are ${this.name}.`);
     if (this.personality) parts.push(this.personality);
-    // Load SOUL.md and MY_RULES.md if they exist
-    try {
-      const dir = this.config._dir;
-      if (dir) {
-        const { join } = require_path;
+
+    // 2. SOUL.md
+    if (dir) {
+      try {
         const soulPath = join(dir, 'SOUL.md');
-        if (existsSync(soulPath)) parts.push('\n\n' + readFileSync(soulPath, 'utf8').trim());
+        if (existsSync(soulPath)) parts.push('\n' + readFileSync(soulPath, 'utf8').trim());
+      } catch {}
+    }
+
+    // 3. WORKFLOW.md (shared/read-only system rules)
+    if (dir) {
+      try {
+        const wfPath = join(dir, 'WORKFLOW.md');
+        if (existsSync(wfPath)) parts.push('\n' + readFileSync(wfPath, 'utf8').trim());
+      } catch {}
+    }
+
+    // 4. MY_RULES.md (learned rules)
+    if (dir) {
+      try {
         const rulesPath = join(dir, 'MY_RULES.md');
-        if (existsSync(rulesPath)) parts.push('\n\n## Rules\n' + readFileSync(rulesPath, 'utf8').trim());
-      }
-    } catch {}
-    parts.push('Be helpful, concise, and friendly. Respond in the same language as the user.');
-    return parts.join(' ');
+        if (existsSync(rulesPath)) {
+          const rules = readFileSync(rulesPath, 'utf8').trim();
+          if (rules) parts.push('\n## Learned Rules\n' + rules);
+        }
+      } catch {}
+    }
+
+    // 5. Memory context
+    if (this.memory) {
+      const memCtx = this.memory.getContextForPrompt(3000);
+      if (memCtx) parts.push('\n' + memCtx);
+    }
+
+    // 6. Knowledge (query-relevant facts)
+    if (this.knowledge && userMessage) {
+      const kCtx = this.knowledge.getContextForQuery(userMessage, 6);
+      if (kCtx) parts.push('\n' + kCtx);
+    }
+
+    // Fallback instruction
+    parts.push('\nBe helpful, concise, and friendly. Respond in the same language as the user.');
+
+    return parts.join('\n');
   }
 
   /**
@@ -146,7 +209,7 @@ export class Instance {
     try {
       // Build messages array with system prompt
       const messages = [
-        { role: 'system', content: this._buildSystemPrompt() },
+        { role: 'system', content: this._buildSystemPrompt(msg.text) },
         ...conversation,
       ];
 
