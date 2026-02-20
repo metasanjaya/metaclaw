@@ -46,6 +46,35 @@ export class MCServer {
       this._json(res, instances);
     });
 
+    this.app.post('/api/instances', (res) => {
+      res.onAborted(() => {});
+      let body = '';
+      res.onData((chunk, isLast) => {
+        body += Buffer.from(chunk).toString();
+        if (isLast) {
+          try {
+            const data = JSON.parse(body);
+            const id = (data.id || data.name || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
+            if (!id) { res.cork(() => { res.writeStatus('400'); this._json(res, { error: 'ID required' }); }); return; }
+            this.instanceManager.create(id, {
+              name: data.name || id,
+              emoji: data.emoji || '🤖',
+              model: data.model || undefined,
+              personality: data.personality || '',
+              channels: data.channels || ['mission-control'],
+              skills: data.skills || ['shell', 'web_search'],
+            }).then(() => {
+              this._json(res, { ok: true, id, instances: this.instanceManager.list() });
+            }).catch(e => {
+              res.cork(() => { res.writeStatus('500'); this._json(res, { error: e.message }); });
+            });
+          } catch (e) {
+            res.cork(() => { res.writeStatus('400'); this._json(res, { error: 'Invalid JSON' }); });
+          }
+        }
+      });
+    });
+
     this.app.get('/api/health', async (res) => {
       res.onAborted(() => {});
       const health = this.instanceManager.healthCheckAll();
