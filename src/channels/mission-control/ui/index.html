@@ -259,27 +259,6 @@
 
     </template>
 
-    <!-- Delete Instance Confirm Modal -->
-    <div x-show="showDeleteConfirm" x-transition.opacity style="position:fixed;inset:0;background:rgba(0,0,0,0.5);backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px);z-index:1001;display:flex;align-items:center;justify-content:center;" @click.self="showDeleteConfirm=false" @keydown.escape.window="showDeleteConfirm=false">
-      <div class="card" style="width:400px;max-width:90vw;" @click.stop>
-        <div style="text-align:center;margin-bottom:16px;">
-          <div style="font-size:40px;margin-bottom:8px;" x-text="deleteTarget?.emoji || '🤖'"></div>
-          <h3 style="font-size:15px;font-weight:600;">Delete <span x-text="deleteTarget?.name || ''"></span>?</h3>
-        </div>
-        <p style="font-size:12px;color:var(--text2);text-align:center;margin-bottom:16px;line-height:1.6;">
-          This will permanently delete the instance, its config, memory, and all chat history. This cannot be undone.
-        </p>
-        <div x-show="deleteError" style="font-size:12px;color:var(--red);padding:6px 10px;background:rgba(239,68,68,0.1);border-radius:6px;margin-bottom:12px;text-align:center;" x-text="deleteError"></div>
-        <div style="display:flex;gap:8px;justify-content:center;">
-          <button @click="showDeleteConfirm=false" style="padding:8px 20px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text2);cursor:pointer;font-family:inherit;font-size:12px;">Cancel</button>
-          <button @click="deleteInstance()" :disabled="deleteLoading" style="padding:8px 20px;background:var(--red);border:none;border-radius:8px;color:white;cursor:pointer;font-family:inherit;font-size:12px;font-weight:600;" :style="deleteLoading?'opacity:0.5;cursor:not-allowed':''">
-            <span x-show="!deleteLoading">Delete</span>
-            <span x-show="deleteLoading">Deleting...</span>
-          </button>
-        </div>
-      </div>
-    </div>
-
     <!-- ========== CHAT (WhatsApp/Telegram style) ========== -->
     <template x-if="page==='chat'">
       <div class="chat-layout">
@@ -512,50 +491,71 @@
       </div>
     </template>
 
-    <!-- Add Instance Modal -->
-    <div x-show="showAddInstance" x-transition.opacity style="position:fixed;inset:0;background:rgba(0,0,0,0.5);backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px);z-index:1000;display:flex;align-items:center;justify-content:center;" @click.self="showAddInstance=false" @keydown.escape.window="showAddInstance=false">
-      <div class="card" style="width:440px;max-width:90vw;" @click.stop>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
-          <h3 style="font-size:15px;font-weight:600;">🤖 New Instance</h3>
-          <button @click="showAddInstance=false" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:18px;">✕</button>
+  </div>
+</div>
+
+<!-- Add Instance Modal -->
+<div x-show="showAddInstance" x-transition.opacity class="modal-overlay" @click.self="showAddInstance=false" @keydown.escape.window="showAddInstance=false">
+  <div class="modal-card" @click.stop>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <h3 style="font-size:15px;font-weight:600;">🤖 New Instance</h3>
+      <button @click="showAddInstance=false" style="background:none;border:none;color:var(--text2);cursor:pointer;font-size:18px;">✕</button>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      <div>
+        <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Name *</label>
+        <input x-model="newInstance.name" type="text" placeholder="e.g. Luna" class="modal-input">
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 80px;gap:12px;">
+        <div>
+          <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Model</label>
+          <select x-model="newInstance.model" class="modal-input">
+            <option value="anthropic/claude-sonnet-4-6">Claude Sonnet 4.6</option>
+            <option value="anthropic/claude-opus-4-6">Claude Opus 4.6</option>
+            <option value="kimi/kimi-k2.5">Kimi K2.5</option>
+            <option value="minimax/MiniMax-M2.5">MiniMax M2.5</option>
+            <option value="openai/gpt-4o">GPT-4o</option>
+          </select>
         </div>
-        <div style="display:flex;flex-direction:column;gap:12px;">
-          <div>
-            <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Name *</label>
-            <input x-model="newInstance.name" type="text" placeholder="e.g. Luna" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:13px;outline:none;" @focus="$el.style.borderColor='var(--accent)'" @blur="$el.style.borderColor='var(--border)'">
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 80px;gap:12px;">
-            <div>
-              <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Model</label>
-              <select x-model="newInstance.model" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:12px;outline:none;">
-                <option value="anthropic/claude-sonnet-4-6">Claude Sonnet 4.6</option>
-                <option value="anthropic/claude-opus-4-6">Claude Opus 4.6</option>
-                <option value="kimi/kimi-k2.5">Kimi K2.5</option>
-                <option value="minimax/MiniMax-M2.5">MiniMax M2.5</option>
-                <option value="openai/gpt-4o">GPT-4o</option>
-              </select>
-            </div>
-            <div>
-              <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Emoji</label>
-              <input x-model="newInstance.emoji" type="text" placeholder="🤖" maxlength="4" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:18px;text-align:center;outline:none;">
-            </div>
-          </div>
-          <div>
-            <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Personality</label>
-            <textarea x-model="newInstance.personality" placeholder="e.g. Friendly assistant who speaks Bahasa Indonesia" rows="3" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:12px;outline:none;resize:vertical;" @focus="$el.style.borderColor='var(--accent)'" @blur="$el.style.borderColor='var(--border)'"></textarea>
-          </div>
-          <div x-show="addInstanceError" style="font-size:12px;color:var(--red);padding:6px 10px;background:rgba(239,68,68,0.1);border-radius:6px;" x-text="addInstanceError"></div>
-          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px;">
-            <button @click="showAddInstance=false" style="padding:8px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text2);cursor:pointer;font-family:inherit;font-size:12px;">Cancel</button>
-            <button @click="createInstance()" :disabled="!newInstance.name.trim() || addInstanceLoading" style="padding:8px 20px;background:var(--accent);border:none;border-radius:8px;color:white;cursor:pointer;font-family:inherit;font-size:12px;font-weight:600;opacity:1;transition:opacity 0.15s;" :style="(!newInstance.name.trim()||addInstanceLoading)?'opacity:0.4;cursor:not-allowed':''">
-              <span x-show="!addInstanceLoading">Create</span>
-              <span x-show="addInstanceLoading">Creating...</span>
-            </button>
-          </div>
+        <div>
+          <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Emoji</label>
+          <input x-model="newInstance.emoji" type="text" placeholder="🤖" maxlength="4" class="modal-input" style="font-size:18px;text-align:center;">
         </div>
       </div>
+      <div>
+        <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Personality</label>
+        <textarea x-model="newInstance.personality" placeholder="e.g. Friendly assistant who speaks Bahasa Indonesia" rows="3" class="modal-input" style="resize:vertical;"></textarea>
+      </div>
+      <div x-show="addInstanceError" style="font-size:12px;color:var(--red);padding:6px 10px;background:rgba(239,68,68,0.1);border-radius:6px;" x-text="addInstanceError"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px;">
+        <button @click="showAddInstance=false" class="modal-btn-cancel">Cancel</button>
+        <button @click="createInstance()" :disabled="!newInstance.name.trim() || addInstanceLoading" class="modal-btn-primary" :style="(!newInstance.name.trim()||addInstanceLoading)?'opacity:0.4;cursor:not-allowed':''">
+          <span x-show="!addInstanceLoading">Create</span>
+          <span x-show="addInstanceLoading">Creating...</span>
+        </button>
+      </div>
     </div>
+  </div>
+</div>
 
+<!-- Delete Instance Modal -->
+<div x-show="showDeleteConfirm" x-transition.opacity class="modal-overlay" @click.self="showDeleteConfirm=false" @keydown.escape.window="showDeleteConfirm=false">
+  <div class="modal-card" style="width:400px;" @click.stop>
+    <div style="text-align:center;margin-bottom:16px;">
+      <div style="font-size:40px;margin-bottom:8px;" x-text="deleteTarget?.emoji || '🤖'"></div>
+      <h3 style="font-size:15px;font-weight:600;">Delete <span x-text="deleteTarget?.name || ''"></span>?</h3>
+    </div>
+    <p style="font-size:12px;color:var(--text2);text-align:center;margin-bottom:16px;line-height:1.6;">
+      This will permanently delete the instance, config, memory, and chat history. This cannot be undone.
+    </p>
+    <div x-show="deleteError" style="font-size:12px;color:var(--red);padding:6px 10px;background:rgba(239,68,68,0.1);border-radius:6px;margin-bottom:12px;text-align:center;" x-text="deleteError"></div>
+    <div style="display:flex;gap:8px;justify-content:center;">
+      <button @click="showDeleteConfirm=false" class="modal-btn-cancel">Cancel</button>
+      <button @click="deleteInstance()" :disabled="deleteLoading" class="modal-btn-danger" :style="deleteLoading?'opacity:0.5;cursor:not-allowed':''">
+        <span x-show="!deleteLoading">Delete</span>
+        <span x-show="deleteLoading">Deleting...</span>
+      </button>
+    </div>
   </div>
 </div>
 
