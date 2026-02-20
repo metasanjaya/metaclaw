@@ -125,10 +125,11 @@ If a simple answer suffices, give it without elaboration.`;
 
     // Kimi (Moonshot) - Native fetch provider (OpenAI SDK has init issues)
     const kimiKey = remoteProviders.kimi?.api_key || process.env.KIMI_API_KEY;
+    console.log('[UnifiedAIClient] Kimi key:', kimiKey ? `${kimiKey.slice(0, 10)}...${kimiKey.slice(-4)}` : 'MISSING');
     if (kimiKey) {
       this.providers.kimi = new KimiProvider({
         apiKey: kimiKey,
-        baseURL: remoteProviders.kimi?.base_url || 'https://api.moonshot.cn/v1',
+        baseURL: remoteProviders.kimi?.base_url || 'https://api.moonshot.ai/v1',
         defaultModel: remoteProviders.kimi?.model || 'kimi-k2.5',
       });
       console.log('✅ Kimi (Moonshot) initialized');

@@ -10,8 +10,10 @@ export class KimiProvider extends BaseProvider {
     this.defaultModel = config.defaultModel || 'kimi-k2.5';
     this.apiKey = config.apiKey || process.env.KIMI_API_KEY;
     this.baseURL = config.baseURL || 'https://api.moonshot.ai/v1';
+    console.log(`[KimiProvider] Base URL: ${this.baseURL}`);
     this.temperature = config.temperature ?? 0.6;
     this.reasoning = config.reasoning ?? false;
+    console.log(`[KimiProvider] Initialized with key: ${this.apiKey ? this.apiKey.slice(0, 10) + '...' + this.apiKey.slice(-4) : 'MISSING'}`);
   }
 
   async chat(messages, options = {}) {
@@ -32,6 +34,8 @@ export class KimiProvider extends BaseProvider {
 
     let res;
     try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30000); // 30s timeout
       res = await fetch(`${this.baseURL}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -39,10 +43,12 @@ export class KimiProvider extends BaseProvider {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(body),
+        signal: controller.signal,
       });
+      clearTimeout(timeout);
     } catch (fetchErr) {
-      console.error(`[KimiProvider.chat] Fetch error:`, fetchErr.message, fetchErr.code);
-      throw new Error(`Kimi fetch failed: ${fetchErr.message} (${fetchErr.code || 'unknown'})`);
+      console.error(`[KimiProvider.chat] Fetch error FULL:`, fetchErr);
+      throw new Error(`Kimi fetch failed: ${fetchErr.message} (${fetchErr.code || fetchErr.cause?.code || 'unknown'})`);
     }
 
     if (!res.ok) {
@@ -108,8 +114,12 @@ export class KimiProvider extends BaseProvider {
       body.thinking = { type: 'disabled' };
     }
 
+    console.log(`[KimiProvider] Making fetch to ${this.baseURL}/chat/completions`);
+    console.log(`[KimiProvider] API Key: ${this.apiKey ? this.apiKey.slice(0, 10) + '...' + this.apiKey.slice(-4) : 'MISSING'}`);
     let res;
     try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30000); // 30s timeout
       res = await fetch(`${this.baseURL}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -117,10 +127,14 @@ export class KimiProvider extends BaseProvider {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(body),
+        signal: controller.signal,
       });
+      clearTimeout(timeout);
+      console.log(`[KimiProvider] Fetch successful, status: ${res.status}`);
     } catch (fetchErr) {
-      console.error(`[KimiProvider] Fetch error:`, fetchErr.message, fetchErr.code);
-      throw new Error(`Kimi fetch failed: ${fetchErr.message} (${fetchErr.code || 'unknown'})`);
+      console.error(`[KimiProvider] Fetch error FULL:`, fetchErr);
+      console.error(`[KimiProvider] Fetch error cause:`, fetchErr.cause);
+      throw new Error(`Kimi fetch failed: ${fetchErr.message} (${fetchErr.code || fetchErr.cause?.code || 'unknown'})`);
     }
 
     if (!res.ok) {
