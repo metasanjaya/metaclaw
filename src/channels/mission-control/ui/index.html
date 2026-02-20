@@ -480,17 +480,103 @@
 
     <!-- ========== SETTINGS ========== -->
     <template x-if="page==='settings'">
-      <div style="padding:40px; width:100%; overflow-y:auto;">
+      <div style="padding:30px; width:100%; overflow-y:auto;" x-data="settingsPage()" x-init="load()">
+
         <h2 style="font-size:16px; margin-bottom:20px;">⚙️ Settings</h2>
-        <div class="card" style="max-width:600px;">
-          <div class="card-title">Instances</div>
-          <template x-for="inst in instances" :key="inst.id">
-            <div class="config-row" style="padding:8px 0;">
-              <span><span x-text="inst.emoji"></span> <span x-text="inst.name"></span></span>
-              <span class="config-val" x-text="inst.model"></span>
+
+        <!-- Global Config -->
+        <div class="card" style="max-width:700px;margin-bottom:16px;">
+          <div class="card-title">🌐 Global Configuration</div>
+          <div style="display:flex;flex-direction:column;gap:12px;">
+            <div>
+              <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Default Model</label>
+              <select x-model="globalConfig.model" class="modal-input">
+                <option value="anthropic/claude-sonnet-4-6">Claude Sonnet 4.6</option>
+                <option value="anthropic/claude-opus-4-6">Claude Opus 4.6</option>
+                <option value="kimi/kimi-k2.5">Kimi K2.5</option>
+                <option value="minimax/MiniMax-M2.5">MiniMax M2.5</option>
+                <option value="openai/gpt-4o">GPT-4o</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Mission Control Port</label>
+              <input x-model="globalConfig.port" type="number" class="modal-input" style="width:120px;">
+            </div>
+            <div style="display:flex;justify-content:flex-end;">
+              <button @click="saveGlobal()" class="modal-btn-primary" :disabled="globalSaving" x-text="globalSaving ? 'Saving...' : 'Save Global Config'"></button>
+            </div>
+            <div x-show="globalMsg" style="font-size:12px;padding:6px 10px;border-radius:6px;" :style="globalMsg?.includes('Error') ? 'color:var(--red);background:rgba(239,68,68,0.1)' : 'color:var(--green);background:rgba(34,197,94,0.1)'" x-text="globalMsg"></div>
+          </div>
+        </div>
+
+        <!-- Instance Configs -->
+        <div class="card" style="max-width:700px;margin-bottom:16px;">
+          <div class="card-title">🤖 Instance Settings</div>
+
+          <!-- Instance Tabs -->
+          <div style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:16px;">
+            <template x-for="inst in $data.instances || instances" :key="inst.id">
+              <div class="tab" :class="selectedInst === inst.id ? 'active' : ''" @click="selectInst(inst.id)" style="display:flex;align-items:center;gap:6px;">
+                <span x-text="inst.emoji"></span> <span x-text="inst.name"></span>
+              </div>
+            </template>
+          </div>
+
+          <!-- Instance Edit Form -->
+          <template x-if="selectedInst && instConfig">
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <div style="display:grid;grid-template-columns:1fr 80px;gap:12px;">
+                <div>
+                  <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Name</label>
+                  <input x-model="instConfig.name" type="text" class="modal-input">
+                </div>
+                <div>
+                  <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Emoji</label>
+                  <input x-model="instConfig.emoji" type="text" maxlength="4" class="modal-input" style="font-size:18px;text-align:center;">
+                </div>
+              </div>
+              <div>
+                <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Model</label>
+                <select x-model="instConfig.model" class="modal-input">
+                  <option value="anthropic/claude-sonnet-4-6">Claude Sonnet 4.6</option>
+                  <option value="anthropic/claude-opus-4-6">Claude Opus 4.6</option>
+                  <option value="kimi/kimi-k2.5">Kimi K2.5</option>
+                  <option value="minimax/MiniMax-M2.5">MiniMax M2.5</option>
+                  <option value="openai/gpt-4o">GPT-4o</option>
+                </select>
+              </div>
+              <div>
+                <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Personality</label>
+                <textarea x-model="instConfig.personality" rows="3" class="modal-input" style="resize:vertical;" placeholder="Describe the instance's personality..."></textarea>
+              </div>
+              <div>
+                <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Skills</label>
+                <input x-model="instConfig.skillsStr" type="text" class="modal-input" placeholder="shell, web_search">
+                <div style="font-size:10px;color:var(--text2);margin-top:2px;">Comma-separated skill names</div>
+              </div>
+              <div>
+                <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Channels</label>
+                <div style="font-size:12px;color:var(--text2);padding:4px 0;">
+                  <template x-for="ch in instConfig.channels || []" :key="ch">
+                    <span style="display:inline-block;padding:2px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;margin:2px;font-size:11px;" x-text="ch"></span>
+                  </template>
+                </div>
+              </div>
+              <div x-show="instConfig.hasTelegram" style="padding:10px;background:var(--bg);border-radius:8px;border:1px solid var(--border);">
+                <div style="font-size:11px;color:var(--text2);margin-bottom:4px;">📱 Telegram</div>
+                <div style="font-size:11px;color:var(--green);">● Connected</div>
+              </div>
+              <div style="display:flex;justify-content:flex-end;gap:8px;">
+                <button @click="selectInst(selectedInst)" class="modal-btn-cancel">Reset</button>
+                <button @click="saveInst()" class="modal-btn-primary" :disabled="instSaving" x-text="instSaving ? 'Saving...' : 'Save Changes'"></button>
+              </div>
+              <div x-show="instMsg" style="font-size:12px;padding:6px 10px;border-radius:6px;" :style="instMsg?.includes('Error') ? 'color:var(--red);background:rgba(239,68,68,0.1)' : 'color:var(--green);background:rgba(34,197,94,0.1)'" x-text="instMsg"></div>
             </div>
           </template>
+
+          <div x-show="!selectedInst" style="font-size:12px;color:var(--text2);padding:12px 0;">Select an instance above to edit its settings</div>
         </div>
+
       </div>
     </template>
 
@@ -586,6 +672,95 @@
 <script>
 function dashboardPage() {
   return {};
+}
+
+function settingsPage() {
+  return {
+    globalConfig: { model: '', port: 3100 },
+    globalSaving: false, globalMsg: '',
+    selectedInst: null, instConfig: null,
+    instSaving: false, instMsg: '',
+
+    async load() {
+      try {
+        const r = await fetch('/api/config');
+        const d = await r.json();
+        this.globalConfig.model = d.global?.model?.primary || 'anthropic/claude-sonnet-4-6';
+        this.globalConfig.port = d.global?.missionControl?.port || 3100;
+      } catch {}
+      // Auto-select first instance
+      const insts = this.$data?.instances || this.instances;
+      if (insts?.length > 0) this.selectInst(insts[0].id);
+    },
+
+    async selectInst(id) {
+      this.selectedInst = id;
+      this.instMsg = '';
+      try {
+        const r = await fetch(`/api/instances/${id}/config`);
+        const d = await r.json();
+        this.instConfig = {
+          name: d.identity?.name || id,
+          emoji: d.identity?.emoji || '🤖',
+          model: d.model?.primary || 'anthropic/claude-sonnet-4-6',
+          personality: d.identity?.personality || '',
+          skillsStr: (d.skills || []).join(', '),
+          channels: d.channels || [],
+          hasTelegram: !!d.telegram,
+        };
+      } catch {}
+    },
+
+    async saveGlobal() {
+      this.globalSaving = true; this.globalMsg = '';
+      try {
+        const r = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: { primary: this.globalConfig.model },
+            missionControl: { port: parseInt(this.globalConfig.port) },
+          }),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error);
+        this.globalMsg = '✅ Saved! Restart needed for port change.';
+      } catch (e) {
+        this.globalMsg = 'Error: ' + e.message;
+      } finally { this.globalSaving = false; }
+    },
+
+    async saveInst() {
+      if (!this.selectedInst || !this.instConfig) return;
+      this.instSaving = true; this.instMsg = '';
+      try {
+        const skills = this.instConfig.skillsStr.split(',').map(s => s.trim()).filter(Boolean);
+        const r = await fetch(`/api/instances/${this.selectedInst}/config`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: { primary: this.instConfig.model },
+            identity: {
+              name: this.instConfig.name,
+              emoji: this.instConfig.emoji,
+              personality: this.instConfig.personality,
+            },
+            skills,
+          }),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error);
+        // Update parent instances list
+        if (d.instances) {
+          const app = Alpine.closestDataStack(this.$el)?.[0];
+          if (app?.instances) app.instances = d.instances;
+        }
+        this.instMsg = '✅ Saved! Restart instance to apply model change.';
+      } catch (e) {
+        this.instMsg = 'Error: ' + e.message;
+      } finally { this.instSaving = false; }
+    },
+  };
 }
 
 function healthPage() {
