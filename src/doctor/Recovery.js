@@ -1,5 +1,5 @@
 /**
- * Self-heal playbook executor.
+ * Self-heal playbook executor with state tracking.
  */
 export class Recovery {
   constructor({ eventBus, channelManager, instanceManager, config = {} }) {
@@ -7,52 +7,71 @@ export class Recovery {
     this.channelManager = channelManager;
     this.instanceManager = instanceManager;
     this.config = config;
-    /** @type {Map<string, {count: number, lastAttempt: number}>} */
+    /** @type {Map<string, {count: number, lastAttempt: number, lastResult: string}>} */
     this._retryState = new Map();
     this.maxRetries = config.maxRetries || 10;
+    /** @type {Array<{ts: number, key: string, action: string, success: boolean, error?: string}>} */
+    this.actions = [];
+    this._maxActions = 200;
   }
 
-  /**
-   * Handle an incident with the appropriate recovery action
-   * @param {import('../core/types.js').Incident} incident
-   */
   async handle(incident) {
     const handler = this._handlers[incident.type];
-    if (!handler) {
-      console.warn(`[Recovery] No handler for incident type: ${incident.type}`);
-      return;
-    }
+    if (!handler) return;
 
     const key = `${incident.type}:${incident.module}`;
-    const state = this._retryState.get(key) || { count: 0, lastAttempt: 0 };
+    const state = this._retryState.get(key) || { count: 0, lastAttempt: 0, lastResult: 'none' };
 
     if (state.count >= this.maxRetries) {
-      console.error(`[Recovery] Max retries reached for ${key}. Manual intervention needed.`);
+      state.lastResult = 'exhausted';
+      this._retryState.set(key, state);
       this.eventBus.emit('health.incident', {
         ...incident,
         type: 'recovery_exhausted',
-        description: `Max retries (${this.maxRetries}) reached for ${key}`,
+        description: `Max retries (${this.maxRetries}) for ${key}`,
         actionTaken: 'notify_owner',
       });
       return;
     }
 
-    // Exponential backoff
     const backoffMs = Math.min(1000 * Math.pow(2, state.count), 60000);
     const elapsed = Date.now() - state.lastAttempt;
     if (elapsed < backoffMs) return;
 
     state.count++;
     state.lastAttempt = Date.now();
-    this._retryState.set(key, state);
 
     try {
       await handler.call(this, incident);
-      state.count = 0; // Reset on success
-      console.log(`[Recovery] Resolved: ${key}`);
+      state.count = 0;
+      state.lastResult = 'resolved';
+      this._logAction(key, handler.name || incident.type, true);
+      console.log(`[Recovery] ✅ Resolved: ${key}`);
     } catch (e) {
-      console.error(`[Recovery] Failed to handle ${key} (attempt ${state.count}):`, e.message);
+      state.lastResult = `failed: ${e.message}`;
+      this._logAction(key, handler.name || incident.type, false, e.message);
+      console.error(`[Recovery] ❌ ${key} (attempt ${state.count}):`, e.message);
     }
+    this._retryState.set(key, state);
+  }
+
+  _logAction(key, action, success, error) {
+    this.actions.push({ ts: Date.now(), key, action, success, error });
+    if (this.actions.length > this._maxActions) {
+      this.actions = this.actions.slice(-this._maxActions);
+    }
+  }
+
+  getState() {
+    const entries = {};
+    for (const [key, state] of this._retryState) {
+      entries[key] = { ...state };
+    }
+    return {
+      retryStates: entries,
+      recentActions: this.actions.slice(-20),
+      maxRetries: this.maxRetries,
+    };
   }
 
   _handlers = {

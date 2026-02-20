@@ -23,6 +23,8 @@ export class MCServer {
     this.eventBus = eventBus;
     this.instanceManager = instanceManager;
     this.onMessage = onMessage;
+    /** @type {import('../../doctor/Doctor.js').Doctor|null} */
+    this.doctor = null;
     this.app = null;
     this.listenSocket = null;
 
@@ -52,30 +54,35 @@ export class MCServer {
 
     this.app.get('/api/doctor', async (res) => {
       res.onAborted(() => {});
-      // System stats
-      const os = await import('node:os');
-      const totalMem = os.default.totalmem();
-      const freeMem = os.default.freemem();
-      const cpus = os.default.cpus();
-      const cpuUsage = cpus.reduce((a, c) => {
-        const total = Object.values(c.times).reduce((s, t) => s + t, 0);
-        return a + (1 - c.times.idle / total);
-      }, 0) / cpus.length * 100;
+      if (this.doctor) {
+        const report = await this.doctor.report();
+        this._json(res, report);
+      } else {
+        this._json(res, { error: 'Doctor not initialized' });
+      }
+    });
 
-      const channels = await this.channelManager.healthCheckAll();
-      const instances = this.instanceManager.healthCheckAll();
+    this.app.get('/api/incidents', (res, req) => {
+      res.onAborted(() => {});
+      if (!this.doctor) { this._json(res, []); return; }
+      const url = req.getQuery();
+      const params = new URLSearchParams(url);
+      const opts = {};
+      if (params.get('limit')) opts.limit = parseInt(params.get('limit'));
+      if (params.get('type')) opts.type = params.get('type');
+      if (params.get('active') === 'true') opts.resolved = false;
+      this._json(res, this.doctor.getIncidents(opts));
+    });
 
-      this._json(res, {
-        system: {
-          memory: { total: totalMem, free: freeMem, used: totalMem - freeMem, pct: Math.round((1 - freeMem/totalMem) * 100) },
-          cpu: { cores: cpus.length, usage: Math.round(cpuUsage) },
-          uptime: process.uptime(),
-          platform: os.default.platform(),
-        },
-        channels,
-        instances,
-        overall: Object.values({...channels, ...instances}).every(h => h.status === 'healthy') ? 'healthy' : 'degraded',
-      });
+    this.app.post('/api/incidents/:id/resolve', (res, req) => {
+      res.onAborted(() => {});
+      const id = req.getParameter(0);
+      if (this.doctor?.resolveIncident(id)) {
+        this._json(res, { ok: true });
+      } else {
+        res.writeStatus('404');
+        this._json(res, { error: 'Incident not found' });
+      }
     });
 
     this.app.get('/api/stats', (res) => {
@@ -244,7 +251,7 @@ export class MCServer {
    * Wire EventBus events to WebSocket broadcast
    */
   _wireEvents() {
-    const events = ['instance.spawn', 'instance.stop', 'instance.crash', 'health.check', 'health.incident'];
+    const events = ['instance.spawn', 'instance.stop', 'instance.crash', 'health.check', 'health.incident', 'doctor.incident', 'doctor.resolved'];
     for (const event of events) {
       this.eventBus.on(event, (data) => {
         this._broadcastAll({ type: 'event', event, data });
