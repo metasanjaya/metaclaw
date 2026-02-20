@@ -332,7 +332,7 @@ export class InstanceManager extends EventEmitter {
       },
       {
         name: 'request_instance',
-        description: 'Send a request to another instance and wait for a response. Use for task delegation, knowledge queries, or status checks.',
+        description: 'Send a request to another instance and wait for a response. Actions: "execute_task" (run a task), "knowledge_query" (search knowledge base), "get_status" (check health), "ask" (ask a question). For asking questions, use action="ask" with payload={question:"your question"}.',
         params: {
           to: { type: 'string', description: 'Target instance ID' },
           action: { type: 'string', description: 'Action to request (e.g. execute_task, query_knowledge, get_status)' },

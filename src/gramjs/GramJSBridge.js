@@ -20,6 +20,7 @@ import { TopicManager } from './TopicManager.js';
 import { KnowledgeManager } from './KnowledgeManager.js';
 import { TaskPlanner } from './TaskPlanner.js';
 import { SubAgent } from './SubAgent.js';
+import { SubAgentWatchdog } from './SubAgentWatchdog.js';
 import SessionManager from './SessionManager.js';
 import SkillManager from './SkillManager.js';
 import { HeartbeatManager } from './HeartbeatManager.js';
@@ -93,7 +94,15 @@ You have tools available via native function calling. Use them directly — NEVE
 - Do NOT say "I will now run..." or "Let me check..." — just call the tool.
 - Do NOT stop mid-task to explain next steps. Complete the work, then summarize what you did.
 - If a task has multiple steps, execute them ALL in sequence using tools. Do not pause for confirmation unless explicitly asked.
-- For simple chat, just respond normally without tools.`;
+- For simple chat, just respond normally without tools.
+
+## CRITICAL: No Planning — Just Execute
+- NEVER output a numbered plan or step list. The user asked you to DO something, not to PLAN something.
+- Start executing step 1 IMMEDIATELY with tool calls. You can describe briefly what you're doing (1 line max) alongside each tool call.
+- If you catch yourself writing "Step 1:", "Step 2:", etc. — STOP. Use a tool instead.
+- Wrong: "Here's my 32-step plan: 1. Create file... 2. Add routes..."
+- Right: [call write tool to create the file] [call write tool to add routes] ... then summarize what you did at the end.
+- Maximum 3 tool calls per round. Work iteratively: do 1-3 things, check results, continue.`;
   return prompt;
 }
 
@@ -126,7 +135,12 @@ You have tools available via native function calling. Use them directly — NEVE
 - Do NOT say "I will now run..." or "Let me check..." — just call the tool.
 - Do NOT stop mid-task to explain next steps. Complete the work, then summarize what you did.
 - If a task has multiple steps, execute them ALL in sequence using tools. Do not pause for confirmation unless explicitly asked.
-- For simple chat, just respond normally without tools.`;
+- For simple chat, just respond normally without tools.
+
+## CRITICAL: No Planning — Just Execute
+- NEVER output a numbered plan or step list. Start executing IMMEDIATELY with tool calls.
+- Wrong: "Here's my plan: 1. Create file... 2. Add routes..."
+- Right: [call write tool] [call shell tool] ... then summarize at the end.`;
 
   return prompt;
 }
@@ -397,6 +411,16 @@ export class GramJSBridge {
     });
     console.log('🤖 SubAgent system initialized');
 
+    // Initialize SubAgent Watchdog
+    this.subAgentWatchdog = new SubAgentWatchdog({
+      subAgent: this.subAgent,
+      sendFn: async (peerId, message, replyTo) => {
+        await this.gram.sendMessage(peerId, message, replyTo);
+      },
+    });
+    this.subAgent.watchdog = this.subAgentWatchdog;
+    console.log('🐕 SubAgent Watchdog initialized');
+
     // Initialize SessionManager
     this.sessionMgr = new SessionManager({
       persistPath: path.join(process.cwd(), 'data', 'sessions'),
@@ -537,7 +561,11 @@ export class GramJSBridge {
               }
             },
             onRequest: async (msg) => {
-              // Generic request handler — can be extended
+              // Route unknown actions as a question/task to the AI
+              const question = msg.payload?.question || msg.payload?.query || msg.payload?.message || msg.payload?.task || JSON.stringify(msg.payload);
+              if (this.instanceMgr?.handlers?.onTaskDelegated) {
+                return await this.instanceMgr.handlers.onTaskDelegated({ task: `[${msg.action}] ${question}`, context: `Request from instance ${msg.from}` }, msg.from);
+              }
               return { error: `Unhandled action: ${msg.action}` };
             },
           },
@@ -678,6 +706,16 @@ User has requested you to continue working without asking for confirmation.
 `;
     }
 
+    // Tool enforcement — prevents "describe instead of execute" pattern
+    prompt += `\n\n## CRITICAL: Tool Usage Rules
+- When you need to run a command, read a file, or perform ANY action: USE THE TOOL IMMEDIATELY. Do NOT describe what you will do.
+- WRONG: "I'll check the config file:" (text only, no tool call)
+- RIGHT: [use shell tool to cat the config file] (actual tool call)
+- If your response would end with ":" followed by code/command, that means you MUST use a tool instead of writing it as text.
+- NEVER say "I will run/check/execute X:" without actually calling the tool in the same turn.
+- Text responses are ONLY for reporting results, asking questions, or explaining findings.
+`;
+
     // Knowledge Base: inject relevant facts
     if (this.knowledge) {
       const kb = this.knowledge.buildContext(userMessage);
@@ -747,6 +785,7 @@ User has requested you to continue working without asking for confirmation.
       prompt += `\n\n## Multi-Instance Network\nYou are instance "${this.instanceMgr.instanceId}" (${this.instanceMgr.instanceName}).`;
       prompt += `\nYour scope: ${myScope}`;
       prompt += `\nIf a user request falls OUTSIDE your scope, use the \`delegate_task\` tool to delegate to the appropriate instance.`;
+      prompt += `\nCRITICAL: If the user tells you to "ask" or "tanya" another instance (e.g. "tanya Arifin", "ask Nayla"), use send_to_instance or request_instance to ASK them for information/knowledge — this is knowledge sharing, NOT task delegation. Use delegate_task ONLY when the user wants to hand off the ENTIRE task to another instance.`;
       prompt += `\nIMPORTANT: When using delegate_task, ALWAYS include replyToId (current chat ID: ${this._currentChatId || 'unknown'}) and replyToUsername (sender's Telegram username if known).`;
       prompt += `\nBy default, replyBack=true — the target instance will process silently and return the result to YOU. You then report the result to the user. Set replyBack=false only if you want the target to message the user directly.`;
       prompt += `\nAfter delegation, summarize the result to the user.`;
@@ -1004,14 +1043,38 @@ Selamat menggunakan! ✨`;
         await this.gram.sendMessage(peerId, '❌ SubAgent not initialized yet.', messageId);
         return true;
       }
-      const taskId = await this.subAgent.spawn({
+      const spawnOpts = {
         goal,
         peerId: String(peerId),
         chatId,
         replyTo: messageId,
         executorModel: `${this.config.models?.complex?.provider || 'anthropic'}/${this.config.models?.complex?.model || 'claude-opus-4-6'}`,
         plannerModel: `${this.config.models?.simple?.provider || 'anthropic'}/${this.config.models?.simple?.model || 'claude-sonnet-4-5'}`,
-      });
+      };
+      const taskId = await this.subAgent.spawn(spawnOpts);
+
+      // Register with watchdog — plan will be updated once planning completes
+      if (this.subAgentWatchdog) {
+        this.subAgent.on(taskId, 'progress', (data) => {
+          if (data.phase === 'planned' && data.plan) {
+            const entry = this.subAgentWatchdog.tracked.get(taskId);
+            if (entry) entry.plan = data.plan;
+          }
+          this.subAgentWatchdog.reportActivity(taskId);
+        });
+        this.subAgent.on(taskId, 'complete', (data) => {
+          if (data.aborted) this.subAgentWatchdog.taskFailed(taskId, 'aborted');
+          else this.subAgentWatchdog.taskCompleted(taskId, data.result);
+        });
+        this.subAgent.on(taskId, 'error', () => {
+          this.subAgentWatchdog.taskFailed(taskId, 'error');
+        });
+        this.subAgentWatchdog.register({
+          id: taskId, task: goal, plan: null,
+          chatId, peerId: String(peerId), replyTo: messageId, spawnOpts,
+        });
+      }
+
       await this.gram.sendMessage(peerId, `🤖 SubAgent [${taskId}] spawned: "${goal}"`, messageId);
       return true;
     }
@@ -1545,6 +1608,13 @@ Message: "${text.substring(0, 200)}"`;
         }
       },
       {
+        name: "restart_self",
+        description: "Restart this MetaClaw instance via PM2. Automatically schedules a confirmation message ~10s after restart. If no confirmation arrives within 2 minutes, the restart failed. Use when user asks to restart or after config changes.",
+        params: {
+          reason: { type: "string", description: "Reason for restart (logged)" }
+        }
+      },
+      {
         name: "send_file",
         description: "Send a file to the current chat",
         params: {
@@ -1900,7 +1970,7 @@ Message: "${text.substring(0, 200)}"`;
           if (!goal) return 'Error: "goal" is required';
           const peerId = this._currentPeerId || '';
           const chatId = this._currentChatId || '';
-          const taskId = await this.subAgent.spawn({
+          const saSpawnOpts = {
             goal,
             type: toolInput.type || 'general',
             peerId: String(peerId),
@@ -1908,7 +1978,31 @@ Message: "${text.substring(0, 200)}"`;
             replyTo: this._currentMessageId,
             executorModel: `${this.config.models?.complex?.provider || 'anthropic'}/${this.config.models?.complex?.model || 'claude-opus-4-6'}`,
             plannerModel: `${this.config.models?.simple?.provider || 'anthropic'}/${this.config.models?.simple?.model || 'claude-sonnet-4-5'}`,
-          });
+          };
+          const taskId = await this.subAgent.spawn(saSpawnOpts);
+
+          // Register with watchdog
+          if (this.subAgentWatchdog) {
+            this.subAgent.on(taskId, 'progress', (data) => {
+              if (data.phase === 'planned' && data.plan) {
+                const entry = this.subAgentWatchdog.tracked.get(taskId);
+                if (entry) entry.plan = data.plan;
+              }
+              this.subAgentWatchdog.reportActivity(taskId);
+            });
+            this.subAgent.on(taskId, 'complete', (data) => {
+              if (data.aborted) this.subAgentWatchdog.taskFailed(taskId, 'aborted');
+              else this.subAgentWatchdog.taskCompleted(taskId, data.result);
+            });
+            this.subAgent.on(taskId, 'error', () => {
+              this.subAgentWatchdog.taskFailed(taskId, 'error');
+            });
+            this.subAgentWatchdog.register({
+              id: taskId, task: goal, plan: null,
+              chatId, peerId: String(peerId), replyTo: this._currentMessageId, spawnOpts: saSpawnOpts,
+            });
+          }
+
           return `✅ SubAgent spawned [${taskId}]\nGoal: "${goal}"\nType: ${toolInput.type || 'general'}\nStatus: running in background. Will report back when done.`;
         }
 
@@ -1959,6 +2053,42 @@ Message: "${text.substring(0, 200)}"`;
           const { execSync } = await import('child_process');
           const output = execSync(toolInput.command, { timeout: (toolInput.timeout || 120) * 1000, encoding: 'utf-8', maxBuffer: 1024 * 1024 });
           return output.substring(0, 5000);
+        }
+
+        case 'restart_self': {
+          const reason = toolInput.reason || 'manual restart';
+          const instanceName = this.config.instance?.id || 'metaclaw';
+          const pm2Name = `metaclaw-${instanceName}`;
+          const chatId = String(this._currentChatId || '');
+          
+          // Write restart marker for post-restart confirmation
+          const markerPath = path.resolve('data/restart-pending.json');
+          const marker = {
+            instance: pm2Name,
+            chatId,
+            requestedAt: Date.now(),
+            requestedAtHuman: new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' }) + ' WIB',
+            reason,
+          };
+          fs.writeFileSync(markerPath, JSON.stringify(marker, null, 2));
+          
+          // Schedule PM2 restart after a short delay (let this response be sent first)
+          // Use spawn detached so the child survives our process dying
+          setTimeout(async () => {
+            try {
+              const { spawn } = await import('child_process');
+              const child = spawn('pm2', ['restart', pm2Name, '--update-env'], {
+                detached: true,
+                stdio: 'ignore',
+              });
+              child.unref();
+              console.log(`🔄 PM2 restart command spawned for ${pm2Name}`);
+            } catch (err) {
+              console.error(`❌ Self-restart failed: ${err.message}`);
+            }
+          }, 3000);
+          
+          return `🔄 Restart scheduled in 3 seconds. Akan ada konfirmasi otomatis ~10 detik setelah restart berhasil. Kalau tidak ada konfirmasi dalam 2 menit, berarti restart gagal.\n\nReason: ${reason}`;
         }
 
         case 'send_file': {
@@ -2127,7 +2257,15 @@ Message: "${text.substring(0, 200)}"`;
    */
   async _detectIncompleteResponse(text, hasToolHistory = false, chatId = null) {
     if (!text) return false;
-    if (!hasToolHistory) return false;
+    // If text ends with ":" it's clearly truncated (AI about to show code/output)
+    const isTruncated = text.trim().endsWith(':');
+    if (!hasToolHistory && !isTruncated) return false;
+    
+    // Fast path: colon-ending with tool history = definitely incomplete (skip AI classifier)
+    if (isTruncated && hasToolHistory) {
+      console.log(`  🧠 Fast heuristic: text ends with ":" + tool history → PENDING (skipping classifier)`);
+      return true;
+    }
     
     // In autonomous mode, almost everything is incomplete unless truly done
     const isAutonomous = chatId && this._autonomousChats.has(chatId);
@@ -2135,7 +2273,7 @@ Message: "${text.substring(0, 200)}"`;
     // Quick heuristics first (no AI call needed)
     const lastLine = text.trim().split('\n').pop().trim();
     if (!isAutonomous && lastLine.endsWith('?')) return false;  // question → complete (but not in autonomous)
-    if (text.length < 30) return false;         // short confirmation → complete
+    if (text.length < 30 && !text.trim().endsWith(':')) return false;  // short confirmation → complete (but ":" means truncated/continuing)
     
     // In autonomous mode, questions like "kalau mau?" are INCOMPLETE
     if (isAutonomous && lastLine.endsWith('?')) return true;
@@ -2203,6 +2341,13 @@ Reply with ONLY one word: PENDING or COMPLETE`,
       'gpt-4o-mini': 16384,
       'gpt-4': 8192,
       'o3-mini': 16384,
+      // Kimi (Moonshot)
+      'kimi-k2.5': 16384,
+      'kimi-k2-0711-preview': 16384,
+      'kimi-k2-turbo-preview': 16384,
+      // MiniMax
+      'MiniMax-M2.5': 16384,
+      'MiniMax-M2.5-highspeed': 16384,
     };
     const defaultMax = complexity === 'complex' ? 16384 : 4096;
     return modelCfg.maxTokens || MODEL_MAX_TOKENS[modelName] || defaultMax;
@@ -2504,11 +2649,11 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
         // hasToolHistory = true if any previous round in this session had tool calls
         const hasToolHistory = round > 0;
         
-        const isIncomplete = result.text && incompleteRetries < 3 ? await this._detectIncompleteResponse(result.text, hasToolHistory, chatId) : false;
+        const isIncomplete = result.text && incompleteRetries < 5 ? await this._detectIncompleteResponse(result.text, hasToolHistory, chatId) : false;
         console.log(`  🔎 Completeness check: hasToolHistory=${hasToolHistory}, incompleteRetries=${incompleteRetries}, isIncomplete=${isIncomplete}`);
         if (isIncomplete) {
           incompleteRetries++;
-          console.log(`  ⚠️ Incomplete response detected (retry ${incompleteRetries}/3) — forcing tool use`);
+          console.log(`  ⚠️ Incomplete response detected (retry ${incompleteRetries}/5) — forcing tool use`);
           this._addToolRoundToHistory(chatId, result, []);
           if (this.conversationMgr) {
             this.conversationMgr.addMessage(chatId, 'user',
@@ -2569,7 +2714,7 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
         return { responseText: result.text, tokensUsed: totalTokens, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
       }
 
-      incompleteRetries = 0; // reset on successful tool use
+      incompleteRetries = Math.max(0, incompleteRetries - 1); // decrement on successful tool use (don't fully reset — prevents loop after forced tools)
 
       // Execute each tool call
       const toolResults = [];
@@ -2602,7 +2747,8 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
         this._addToolRoundToHistory(chatId, result, toolResults);
         
         if (this.conversationMgr) {
-          this.conversationMgr.messages[this.conversationMgr.messages.length - 1].content += `\n\n${errorMsg}`;
+          const chatMsgs = this.conversationMgr.getHistory?.(chatId) || this.conversationMgr.messages?.[chatId] || [];
+          if (chatMsgs.length > 0) chatMsgs[chatMsgs.length - 1].content += `\n\n${errorMsg}`;
         }
         this._lastErrorType = null;
       } else {
@@ -2780,6 +2926,9 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
     });
 
     console.log('🚀 GramJS Bridge listening for messages');
+    
+    // Check for restart confirmation marker
+    this._checkRestartConfirmation();
     
     // Register typing event handler for incoming typing indicators
     this._setupTypingHandler();
@@ -3107,6 +3256,47 @@ Reply ONLY with "simple" or "complex" (no explanation):`;
   /**
    * Set up typing event handler to detect typing indicators
    */
+  async _checkRestartConfirmation() {
+    try {
+      const markerPath = path.resolve('data/restart-pending.json');
+      if (!fs.existsSync(markerPath)) return;
+      
+      const marker = JSON.parse(fs.readFileSync(markerPath, 'utf-8'));
+      const elapsed = Date.now() - marker.requestedAt;
+      
+      // Only confirm if restart was recent (< 2 minutes ago)
+      if (elapsed > 120000) {
+        fs.unlinkSync(markerPath);
+        return;
+      }
+      
+      const elapsedSec = (elapsed / 1000).toFixed(1);
+      const msg = `✅ **Restart berhasil!**\n\nInstance \`${marker.instance}\` sudah online kembali.\n⏱️ Downtime: ~${elapsedSec}s\n🕐 Restart diminta: ${marker.requestedAtHuman}`;
+      
+      // Send confirmation with retries (GramJS entity cache needs time)
+      const sendConfirm = async (retries = 3) => {
+        for (let i = 0; i < retries; i++) {
+          await new Promise(r => setTimeout(r, 15000 + i * 10000)); // 15s, 25s, 35s
+          try {
+            if (marker.chatId && this.gram) {
+              await this.gram.sendMessage(marker.chatId, msg);
+              console.log(`✅ Restart confirmation sent to ${marker.chatId} (attempt ${i + 1})`);
+              try { fs.unlinkSync(markerPath); } catch {}
+              return;
+            }
+          } catch (err) {
+            console.warn(`⚠️ Restart confirmation attempt ${i + 1}/${retries} failed: ${err.message}`);
+          }
+        }
+        console.warn('❌ All restart confirmation attempts failed');
+        try { fs.unlinkSync(markerPath); } catch {}
+      };
+      sendConfirm();
+    } catch (err) {
+      console.warn(`⚠️ Restart confirmation check failed: ${err.message}`);
+    }
+  }
+
   _setupTypingHandler() {
     if (!this.gram?.client) {
       console.warn('⚠️ GramJS client not ready for typing handler');

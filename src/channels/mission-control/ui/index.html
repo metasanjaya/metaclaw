@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MetaClaw Mission Control</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<script>
+tailwind.config = {
+  darkMode: 'class',
+  theme: {
+    extend: {
+      colors: {
+        mc: { bg: '#0f172a', card: '#1e293b', border: '#334155', accent: '#3b82f6', green: '#22c55e', red: '#ef4444', yellow: '#eab308' }
+      }
+    }
+  }
+}
+</script>
+<style>
+  body { background: #0f172a; }
+  .scrollbar-thin::-webkit-scrollbar { width: 4px; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+</style>
+</head>
+<body class="dark text-gray-200 min-h-screen" x-data="dashboard()" x-init="init()">
+
+<!-- Top Bar -->
+<header class="bg-mc-card border-b border-mc-border px-6 py-3 flex items-center justify-between">
+  <div class="flex items-center gap-4">
+    <h1 class="text-lg font-bold">⚡ MetaClaw <span class="text-mc-accent">Mission Control</span></h1>
+    <span class="text-xs px-2 py-0.5 rounded-full" :class="connected ? 'bg-mc-green/20 text-mc-green' : 'bg-mc-red/20 text-mc-red'">
+      <span x-text="connected ? '● Online' : '● Offline'"></span>
+    </span>
+  </div>
+  <div class="flex items-center gap-6 text-sm">
+    <div class="text-center"><div class="text-lg font-bold" x-text="instances.length">0</div><div class="text-gray-500 text-xs">Instances</div></div>
+    <div class="text-center"><div class="text-lg font-bold text-mc-green" x-text="instances.filter(i=>i.status==='running').length">0</div><div class="text-gray-500 text-xs">Running</div></div>
+    <div class="text-gray-500" x-text="clock"></div>
+  </div>
+</header>
+
+<!-- Nav -->
+<nav class="bg-mc-card/50 border-b border-mc-border px-6 py-2 flex gap-4 text-sm">
+  <a href="/" class="text-mc-accent font-medium">Dashboard</a>
+  <a href="/chat" class="text-gray-400 hover:text-white">Chat</a>
+  <a href="/health" class="text-gray-400 hover:text-white">Health</a>
+  <a href="/settings" class="text-gray-400 hover:text-white">Settings</a>
+</nav>
+
+<main class="p-6 max-w-7xl mx-auto">
+
+  <!-- Instance Grid -->
+  <h2 class="text-sm font-medium text-gray-400 mb-3">INSTANCES</h2>
+  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
+    <template x-for="inst in instances" :key="inst.id">
+      <div class="bg-mc-card rounded-lg border border-mc-border p-4 hover:border-mc-accent/50 transition cursor-pointer"
+           @click="window.location.href='/chat/'+inst.id">
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2">
+            <span class="text-xl" x-text="inst.emoji"></span>
+            <span class="font-medium" x-text="inst.name"></span>
+          </div>
+          <span class="text-xs px-2 py-0.5 rounded-full"
+                :class="inst.status==='running' ? 'bg-mc-green/20 text-mc-green' : 'bg-gray-600/20 text-gray-400'"
+                x-text="inst.status"></span>
+        </div>
+        <div class="text-xs text-gray-500 space-y-1">
+          <div>Model: <span class="text-gray-300" x-text="inst.model"></span></div>
+          <div>Channels: <span class="text-gray-300" x-text="inst.channels?.join(', ') || 'none'"></span></div>
+        </div>
+      </div>
+    </template>
+    <div x-show="instances.length === 0" class="col-span-full text-center text-gray-500 py-8">
+      No instances found. Run <code class="bg-mc-card px-2 py-1 rounded">metaclaw init &lt;name&gt;</code>
+    </div>
+  </div>
+
+  <!-- Events Feed -->
+  <h2 class="text-sm font-medium text-gray-400 mb-3">LIVE EVENTS</h2>
+  <div class="bg-mc-card rounded-lg border border-mc-border p-4 max-h-64 overflow-y-auto scrollbar-thin">
+    <template x-for="(evt, i) in events.slice().reverse()" :key="i">
+      <div class="text-xs py-1 border-b border-mc-border/50 flex gap-3">
+        <span class="text-gray-500 w-20 shrink-0" x-text="new Date(evt.time).toLocaleTimeString()"></span>
+        <span class="text-gray-400" x-text="evt.event"></span>
+        <span class="text-gray-300 truncate" x-text="JSON.stringify(evt.data)"></span>
+      </div>
+    </template>
+    <div x-show="events.length === 0" class="text-gray-500 text-xs">Waiting for events...</div>
+  </div>
+
+</main>
+
+<script>
+function dashboard() {
+  return {
+    connected: false,
+    instances: [],
+    events: [],
+    clock: '',
+    ws: null,
+
+    init() {
+      this.connectWs();
+      setInterval(() => { this.clock = new Date().toLocaleTimeString(); }, 1000);
+      this.clock = new Date().toLocaleTimeString();
+    },
+
+    connectWs() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      this.ws = new WebSocket(`${proto}//${location.host}/ws`);
+      this.ws.onopen = () => { this.connected = true; };
+      this.ws.onclose = () => {
+        this.connected = false;
+        setTimeout(() => this.connectWs(), 3000);
+      };
+      this.ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'welcome') {
+          this.instances = msg.instances || [];
+        } else if (msg.type === 'event') {
+          this.events.push({ event: msg.event, data: msg.data, time: Date.now() });
+          if (this.events.length > 100) this.events.splice(0, this.events.length - 100);
+          // Refresh instances on instance events
+          if (msg.event?.startsWith('instance.')) {
+            fetch('/api/instances').then(r=>r.json()).then(d => this.instances = d);
+          }
+        }
+      };
+    }
+  };
+}
+</script>
+</body>
+</html>

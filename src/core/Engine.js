@@ -6,6 +6,7 @@ import { SkillRegistry } from '../skills/SkillRegistry.js';
 import { InstanceManager } from '../instances/InstanceManager.js';
 import { Doctor } from '../doctor/Doctor.js';
 import { MeshManager } from '../mesh/MeshManager.js';
+import { MCChannel } from '../channels/mission-control/MCChannel.js';
 
 /**
  * MetaClaw v3 Engine — main orchestrator.
@@ -50,8 +51,14 @@ export class Engine {
     // 4. Load built-in skills
     // TODO: load from code dir + instance skill dirs
 
-    // 5. Register channels
-    // TODO: register channels based on instance configs (MC, Telegram, etc.)
+    // 5. Register Mission Control (default channel)
+    const mcConfig = this.config.global.missionControl || { port: 3100 };
+    const mc = new MCChannel({
+      config: mcConfig,
+      eventBus: this.eventBus,
+      instanceManager: this.instanceManager,
+    });
+    this.channelManager.register(mc);
 
     // 6. Start instances
     if (this.opts.instanceId) {
