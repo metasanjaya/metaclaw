@@ -100,6 +100,14 @@ export class ChatStore {
     });
   }
 
+  /**
+   * Clear all messages for a chat
+   * @param {string} chatId
+   */
+  clearChat(chatId) {
+    this.db.prepare('DELETE FROM messages WHERE chat_id = ?').run(chatId);
+  }
+
   close() {
     this.db.close();
   }

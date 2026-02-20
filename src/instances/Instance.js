@@ -356,6 +356,15 @@ export class Instance {
     const chatId = msg.chatId;
     const MAX_TOOL_ROUNDS = 8;
 
+    // Handle /clear command
+    if (msg.text?.trim() === '/clear') {
+      if (this.chatStore) {
+        this.chatStore.clearChat(chatId);
+        console.log(`[Instance:${this.id}] Cleared conversation for chat ${chatId}`);
+      }
+      return '✅ Conversation cleared.';
+    }
+
     // Classify topic
     if (this.topics) this.topics.classify(chatId, msg.text, 'user');
 
