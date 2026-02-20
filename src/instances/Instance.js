@@ -437,7 +437,7 @@ export class Instance {
             chatId,
             role: 'assistant',
             text: response.text || '',
-            metadata: JSON.stringify({ toolCalls: response.toolCalls, reasoningContent: response.reasoningContent }),
+            metadata: { toolCalls: response.toolCalls, reasoningContent: response.reasoningContent },
             timestamp: Date.now(),
           });
         }
@@ -450,7 +450,7 @@ export class Instance {
               chatId,
               role: 'tool',
               text: tr.result,
-              metadata: JSON.stringify({ toolCallId: tr.id }),
+              metadata: { toolCallId: tr.id },
               timestamp: Date.now(),
             });
           }
