@@ -131,13 +131,12 @@ export class Instance {
       } catch {}
     }
 
-    // 3. WORKFLOW.md (shared/read-only system rules)
-    if (dir) {
-      try {
-        const wfPath = join(dir, 'WORKFLOW.md');
-        if (existsSync(wfPath)) parts.push('\n' + readFileSync(wfPath, 'utf8').trim());
-      } catch {}
-    }
+    // 3. WORKFLOW.md (project-level, read-only — NOT in instance dir)
+    try {
+      const projectRoot = join(import.meta.dirname, '../..');
+      const wfPath = join(projectRoot, 'defaults', 'WORKFLOW.md');
+      if (existsSync(wfPath)) parts.push('\n' + readFileSync(wfPath, 'utf8').trim());
+    } catch {}
 
     // 4. MY_RULES.md (learned rules)
     if (dir) {

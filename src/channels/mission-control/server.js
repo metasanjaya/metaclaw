@@ -357,6 +357,17 @@ export class MCServer {
       });
     });
 
+    // WORKFLOW.md (read-only, project-level)
+    this.app.get('/api/workflow', async (res) => {
+      res.onAborted(() => {});
+      try {
+        const wfPath = join(import.meta.dirname, '../../..', 'defaults', 'WORKFLOW.md');
+        const { readFileSync, existsSync } = await import('node:fs');
+        const content = existsSync(wfPath) ? readFileSync(wfPath, 'utf8') : '';
+        this._json(res, { content, readOnly: true });
+      } catch { this._json(res, { content: '', readOnly: true }); }
+    });
+
     this.app.get('/api/tasks', (res) => {
       res.onAborted(() => {});
       // TODO: wire to actual task system
