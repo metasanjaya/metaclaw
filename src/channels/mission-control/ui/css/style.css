@@ -257,13 +257,16 @@ body { font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', 'Courier New', mon
 .stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--text2); margin-bottom: 6px; }
 .stat-value { font-size: 22px; font-weight: 700; color: var(--text); }
 
-/* Delete button on instance cards */
-.del-btn {
+/* Instance action buttons */
+.instance-actions { display: flex; gap: 2px; }
+.action-btn {
   background: none; border: none; color: var(--text2); cursor: pointer; font-size: 12px;
   padding: 4px 6px; border-radius: 4px; opacity: 0; transition: all 0.15s;
 }
-.agent-card:hover .del-btn { opacity: 0.6; }
-.del-btn:hover { opacity: 1 !important; color: var(--red); background: rgba(239,68,68,0.1); }
+.agent-card:hover .action-btn { opacity: 0.6; }
+.action-btn:hover { opacity: 1 !important; }
+.restart-btn:hover { color: var(--accent); background: rgba(59,130,246,0.1); }
+.del-btn:hover { color: var(--red); background: rgba(239,68,68,0.1); }
 
 /* Quick chat row */
 .quick-chat-row {
