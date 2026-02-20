@@ -1,6 +1,9 @@
 import { ChatStore } from './ChatStore.js';
 import { MemoryManager } from './MemoryManager.js';
 import { KnowledgeManager } from './KnowledgeManager.js';
+import { ToolExecutor } from './ToolExecutor.js';
+import { TopicManager } from './TopicManager.js';
+import { RAGEngine } from './RAGEngine.js';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -39,6 +42,12 @@ export class Instance {
     this.memory = null;
     /** @type {KnowledgeManager|null} */
     this.knowledge = null;
+    /** @type {ToolExecutor|null} */
+    this.tools = null;
+    /** @type {TopicManager|null} */
+    this.topics = null;
+    /** @type {RAGEngine|null} */
+    this.rag = null;
 
     /** @type {{inputTokens:number, outputTokens:number, cost:number, requests:number}} */
     this.stats = { inputTokens: 0, outputTokens: 0, cost: 0, requests: 0, totalMessages: 0 };
@@ -80,6 +89,25 @@ export class Instance {
         console.error(`[Instance:${this.id}] Knowledge error:`, e.message);
       }
     }
+    // Init tools, topics, RAG
+    if (this.dataDir) {
+      try {
+        this.tools = new ToolExecutor({ instance: this, config: this.config });
+        console.log(`[Instance:${this.id}] Tools initialized (${this.tools.getToolDefinitions().length} tools)`);
+      } catch (e) { console.error(`[Instance:${this.id}] Tools error:`, e.message); }
+
+      try {
+        this.topics = new TopicManager(this.dataDir);
+        console.log(`[Instance:${this.id}] Topics initialized`);
+      } catch (e) { console.error(`[Instance:${this.id}] Topics error:`, e.message); }
+
+      try {
+        this.rag = new RAGEngine(this.dataDir);
+        this.rag.initialize();
+        console.log(`[Instance:${this.id}] RAG initialized (${this.rag.chunks.length} chunks)`);
+      } catch (e) { console.error(`[Instance:${this.id}] RAG error:`, e.message); }
+    }
+
     // Load stats from DB
     if (this.chatStore) {
       try {
@@ -114,8 +142,10 @@ export class Instance {
    * 4. MY_RULES.md (learned rules)
    * 5. Memory context (long-term + recent daily)
    * 6. Knowledge (relevant facts injected per query)
+   * 7. RAG (retrieved chunks from memory/knowledge)
+   * 8. Topic context hint
    */
-  _buildSystemPrompt(userMessage = '') {
+  _buildSystemPrompt(userMessage = '', chatId = '') {
     const parts = [];
     const dir = this.config._dir;
 
@@ -161,6 +191,18 @@ export class Instance {
       if (kCtx) parts.push('\n' + kCtx);
     }
 
+    // 7. RAG (retrieved context)
+    if (this.rag && userMessage) {
+      const ragCtx = this.rag.getContextForPrompt(userMessage, 2000);
+      if (ragCtx) parts.push('\n' + ragCtx);
+    }
+
+    // 8. Topic context hint
+    if (this.topics && chatId) {
+      const topicHint = this.topics.getContextHint(chatId);
+      if (topicHint) parts.push(topicHint);
+    }
+
     // Fallback instruction
     parts.push('\nBe helpful, concise, and friendly. Respond in the same language as the user.');
 
@@ -185,71 +227,102 @@ export class Instance {
    * @returns {Promise<string|null>} response text
    */
   async handleMessage(msg) {
-    if (this.status !== 'running') {
-      console.warn(`[Instance:${this.id}] Received message but not running`);
-      return null;
-    }
-
-    if (!this.router) {
-      console.warn(`[Instance:${this.id}] No router available`);
-      return null;
-    }
+    if (this.status !== 'running') return null;
+    if (!this.router) return null;
 
     const chatId = msg.chatId;
+    const MAX_TOOL_ROUNDS = 8;
+
+    // Classify topic
+    if (this.topics) this.topics.classify(chatId, msg.text, 'user');
 
     // Persist user message
     if (this.chatStore) {
       this.chatStore.save({ id: msg.id, chatId, role: 'user', text: msg.text, senderId: msg.senderId, timestamp: msg.timestamp });
     }
 
-    // Load conversation from store
     const conversation = this._getConversation(chatId);
+    const systemPrompt = this._buildSystemPrompt(msg.text, chatId);
+    const tools = this.tools?.getToolDefinitions() || [];
+
+    console.log(`[Instance:${this.id}] Processing message from ${msg.senderId} (${conversation.length} msgs, ${tools.length} tools)`);
 
     try {
-      // Build messages array with system prompt
-      const messages = [
-        { role: 'system', content: this._buildSystemPrompt(msg.text) },
-        ...conversation,
-      ];
+      let totalIn = 0, totalOut = 0;
+      // Build working messages (separate from persisted conversation)
+      const workingMessages = [...conversation];
 
-      console.log(`[Instance:${this.id}] Processing message from ${msg.senderId} (${conversation.length} msgs in context)`);
+      for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+        const messages = [{ role: 'system', content: systemPrompt }, ...workingMessages];
 
-      const response = await this.router.chat({
-        instanceId: this.id,
-        model: this.model,
-        messages,
-        options: { maxTokens: 4096, temperature: 0.7 },
-      });
+        // Use chatWithTools if tools available, otherwise plain chat
+        const response = tools.length > 0
+          ? await this.router.chatWithTools({ instanceId: this.id, model: this.model, messages, tools, options: { maxTokens: 4096, temperature: 0.7 } })
+          : await this.router.chat({ instanceId: this.id, model: this.model, messages, options: { maxTokens: 4096, temperature: 0.7 } });
 
-      const text = response.text || response.content || '';
+        totalIn += response.inputTokens || 0;
+        totalOut += response.outputTokens || 0;
 
-      // Track stats
-      const inTok = response.inputTokens || response.usage?.inputTokens || response.usage?.prompt_tokens || 0;
-      const outTok = response.outputTokens || response.usage?.outputTokens || response.usage?.completion_tokens || 0;
-      this.stats.inputTokens += inTok;
-      this.stats.outputTokens += outTok;
-      this.stats.requests++;
+        // No tool calls → final response
+        if (!response.toolCalls || response.toolCalls.length === 0) {
+          const text = response.text || '';
+          this._trackStats(totalIn, totalOut);
+          this._persistResponse(chatId, text);
+          this._reindexIfNeeded();
+          return text;
+        }
 
-      // Persist assistant response
-      if (this.chatStore) {
-        this.chatStore.save({ id: crypto.randomUUID(), chatId, role: 'assistant', text, timestamp: Date.now() });
+        // Execute tool calls
+        console.log(`[Instance:${this.id}] Tool round ${round + 1}: ${response.toolCalls.map(t => t.name).join(', ')}`);
+        const toolResults = [];
+        for (const tc of response.toolCalls) {
+          const output = await this.tools.execute(tc.name, tc.input);
+          toolResults.push({ id: tc.id, result: typeof output === 'string' ? output.slice(0, 3000) : JSON.stringify(output).slice(0, 3000) });
+        }
+
+        // Add tool round to working messages (native format)
+        workingMessages.push({
+          role: 'assistant',
+          content: response.text || null,
+          tool_calls: response.toolCalls.map(tc => ({
+            id: tc.id,
+            function: { name: tc.name, arguments: typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input) },
+          })),
+        });
+        for (const tr of toolResults) {
+          workingMessages.push({ role: 'tool', tool_call_id: tr.id, content: tr.result });
+        }
       }
 
-      // Emit for tracking
-      this.eventBus.emit('instance.response', {
-        instanceId: this.id,
-        chatId,
-        text,
-        usage: response.usage,
-        model: this.model,
-      });
-
-      return text;
+      // Max rounds reached
+      this._trackStats(totalIn, totalOut);
+      const fallback = '(max tool rounds reached)';
+      this._persistResponse(chatId, fallback);
+      return fallback;
     } catch (e) {
       console.error(`[Instance:${this.id}] AI error:`, e.message);
       this.eventBus.emit('instance.error', { instanceId: this.id, error: e.message });
       return `⚠️ Error: ${e.message}`;
     }
+  }
+
+  _trackStats(inTok, outTok) {
+    this.stats.inputTokens += inTok;
+    this.stats.outputTokens += outTok;
+    this.stats.requests++;
+    this.stats.totalMessages += 2;
+  }
+
+  _persistResponse(chatId, text) {
+    if (this.chatStore) {
+      this.chatStore.save({ id: crypto.randomUUID(), chatId, role: 'assistant', text, timestamp: Date.now() });
+    }
+    this.eventBus.emit('instance.response', { instanceId: this.id, chatId, text, model: this.model });
+  }
+
+  _reindexIfNeeded() {
+    // Re-index RAG after knowledge/memory may have changed
+    if (this.rag) { try { this.rag.reindex(); } catch {} }
   }
 
   /**

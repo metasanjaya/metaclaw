@@ -110,6 +110,50 @@ export class Router {
   }
 
   /**
+   * Send messages to AI with tool definitions (native function calling).
+   * @param {Object} opts
+   * @param {string} opts.instanceId
+   * @param {string} opts.model
+   * @param {Array} opts.messages
+   * @param {Array} opts.tools — tool definitions [{name, description, params}]
+   * @param {Object} [opts.options]
+   * @returns {Promise<{text:string, toolCalls?:Array, inputTokens?:number, outputTokens?:number}>}
+   */
+  async chatWithTools({ instanceId, model, messages, tools = [], options = {} }) {
+    if (!this._client) throw new Error('Router not initialized');
+
+    const start = Date.now();
+    const modelName = model.includes('/') ? model.split('/').pop() : model;
+    const provider = this._resolveProvider(modelName);
+
+    if (!provider?.chatWithTools) {
+      // Fallback to plain chat if provider doesn't support tools
+      return this.chat({ instanceId, model, messages, options });
+    }
+
+    try {
+      const result = await provider.chatWithTools(messages, tools, {
+        model: modelName,
+        maxTokens: options.maxTokens || 4096,
+        temperature: options.temperature || 0.7,
+      });
+
+      const latency = Date.now() - start;
+      this.eventBus.emit('ai.response', { instanceId, model, latency });
+
+      return {
+        text: result.text || '',
+        toolCalls: result.toolCalls || null,
+        inputTokens: result.inputTokens || result.tokensUsed || 0,
+        outputTokens: result.outputTokens || 0,
+      };
+    } catch (e) {
+      this.eventBus.emit('ai.error', { instanceId, model, error: e.message });
+      throw e;
+    }
+  }
+
+  /**
    * Resolve provider from model name
    * @param {string} modelName
    * @returns {Object|null}
