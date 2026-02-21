@@ -93,7 +93,6 @@ export class Router {
       console.log(`[Router] Resolved provider for ${modelName}:`, provider ? provider.name || 'found' : 'null');
 
       // Debug logging
-      console.log(`[Router] debugLogger exists: ${!!this.debugLogger}, enabled: ${this.debugLogger?.enabled}`);
       this.debugLogger?.logRequest(provider?.name || 'unknown', modelName, messages, options);
 
       let response;
