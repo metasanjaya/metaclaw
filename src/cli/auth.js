@@ -57,7 +57,7 @@ async function authTelegramInteractive(instanceId) {
   try {
     // Import telegram dynamically
     const { TelegramClient } = await import('telegram');
-    const { StringSession } = await import('telegram/sessions');
+    const { StringSession } = await import('telegram/sessions/index.js');
     
     const sessionFile = join(instanceDir, 'sessions', 'telegram.session');
     
