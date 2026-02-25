@@ -112,155 +112,217 @@
 
 ## Quick Start
 
+### Installation
+
 ```bash
 # 1. Clone & install
-git clone https://github.com/metasanjaya/metaclaw
+git clone https://github.com/metasanjaya/metaclaw.git
 cd metaclaw
-npm run install-all
+npm install
 
-# 2. Run the setup wizard
-npm run setup
-
-# 3. First-time login (interactive)
-node src/gramjs/index.js
-# → Enter phone, code, 2FA → wait for "listening" → Ctrl+C
-
-# 4. Start with pm2
-pm2 start src/gramjs/index.js --name metaclaw
-pm2 save && pm2 startup
+# 2. Install PM2 globally (optional but recommended)
+npm install -g pm2
 ```
 
-## Default Model Configuration
+### Setup
+
+```bash
+# Run the setup wizard to create your first instance
+npx metaclaw setup
+
+# Or manually create config
+mkdir -p ~/.metaclaw/instances/agent1
+cp defaults/config.yaml.example ~/.metaclaw/instances/agent1/config.yaml
+# Edit config.yaml with your API keys
+```
+
+### Start
+
+```bash
+# Start all instances
+npx metaclaw start
+
+# Or with PM2
+pm2 start ecosystem.config.cjs
+pm2 save && pm2 startup
+
+# View logs
+pm2 logs metaclaw
+```
+
+### Terminal Mode (Optional)
+
+For headless servers without Telegram:
+
+```bash
+# Enable terminal in config
+# ~/.metaclaw/instances/agent1/config.yaml
+terminal:
+  enabled: true
+
+# Start interactive terminal
+npx metaclaw terminal agent1
+```
+
+---
+
+## Instance Configuration
+
+### Per-Instance Config (`~/.metaclaw/instances/<id>/config.yaml`)
 
 ```yaml
-models:
-  # Simple tasks (casual chat, quick answers)
-  simple:
-    provider: openai
-    model: gpt-5.2
-    reasoning: medium
+# Identity
+identity:
+  name: Agent
+  emoji: 🤖
+  personality: Helpful AI assistant
 
-  # Complex tasks (analysis, debugging, multi-step)
-  complex:
-    provider: anthropic
-    model: claude-opus-4-6
+# Model
+model:
+  primary: kimi/kimi-k2.5
 
-  # Intent classification & vision
-  intent:
-    provider: google
-    model: gemini-2.5-flash
-  vision:
-    provider: google
-    model: gemini-2.5-flash
+# AI Providers
+remote:
+  providers:
+    kimi:
+      apiKey: ${KIMI_API_KEY}
+      baseURL: https://api.moonshot.ai/v1
 
-  # Fallback
-  fallback:
-    provider: google
-    model: gemini-3
+# Channels
+telegram:
+  enabled: true
+  apiId: ${TELEGRAM_API_ID}
+  apiHash: ${TELEGRAM_API_HASH}
+  whitelist:
+    - 123456789
 
-# Sub-Agent models
-subagent:
-  planner:
-    provider: openai
-    model: gpt-5.2
-    reasoning: high
-  executor:
-    provider: minimax
-    model: MiniMax-M2.5
+whatsapp:
+  enabled: false
+
+terminal:
+  enabled: true
+  streaming: true
+
+# Response delay (seconds)
+response_delay:
+  dm: 1
+  group: 3
 ```
 
-## Commands
+### Global Config (`~/.metaclaw/config.yaml`)
 
-| Command | Description |
-|---------|-------------|
-| `/stats` | Usage statistics |
-| `/dailyusage` | Daily stats with cost estimate |
-| `/clear` | Delete messages & reset conversation |
-| `/remember <text>` | Save to memory |
-| `/memory` | Show recent memories |
-| `/forget` | Clear today's memory |
-| `/subagent <goal>` | Spawn autonomous AI worker |
-| `/subagent:status [id]` | Check task status |
-| `/subagent:abort <id>` | Abort a running task |
-| `/sessions` | List all sessions |
-| `/skills` | List installed skills |
-| `/heartbeat` | Heartbeat status |
-| `/stoptasks` | Stop all async tasks |
-| `/stopagents` | Abort all sub-agents |
-| `/stopall` | Stop all tasks + agents |
-| `/clearall` | Stop + delete all tasks & agents |
+```yaml
+instances:
+  agent1:
+    model: kimi/kimi-k2.5
+    telegram:
+      enabled: true
+    terminal:
+      enabled: true
 
-## HEARTBEAT.md
+  agent2:
+    model: kimi/kimi-k2.5
+    telegram:
+      enabled: false
+    terminal:
+      enabled: true
 
-```markdown
-## interval: 300
-## notify: <telegram_user_id>
-
-## Checks
-- disk: `df -h / | awk 'NR==2{print $5}' | tr -d %` | if >85 | Disk usage high
-- mem: `free -m | awk '/Mem/{printf "%.0f", $3/$2*100}'` | if >90 | Memory high
-
-## Tasks
-- email: Check inbox for urgent emails | every 4h
+redis:
+  url: redis://localhost:6379
 ```
+
+---
+
+## CLI Commands
+
+```bash
+# Start/stop/restart
+metaclaw start              # Start all instances
+metaclaw start --instance agent1   # Start specific instance
+metaclaw stop
+metaclaw restart
+
+# Status & logs
+metaclaw status
+metaclaw logs
+
+# Instance management
+metaclaw create agent2      # Create new instance
+metaclaw terminal agent1    # Interactive terminal
+
+# Help
+metaclaw --help
+```
+
+---
 
 ## Architecture
 
 ```
-src/gramjs/
-├── GramJSBridge.js        # Main orchestrator
-├── GramJSClient.js        # MTProto connection
-├── MessageQueue.js        # Rate-limited message sending
-├── SubAgent.js            # Autonomous AI workers
-├── AsyncTaskManager.js    # Background shell tasks (dedup + rate limit)
-├── Scheduler.js           # Persistent job scheduler (dedup)
-├── SessionManager.js      # Structured session contexts
-├── SkillManager.js        # Plugin system
-├── HeartbeatManager.js    # Periodic monitoring
-├── ConversationManager.js # Chat history + embeddings
-├── KnowledgeManager.js    # Dynamic knowledge base
-├── MemoryManager.js       # Memory system
-├── RAGEngine.js           # Retrieval-augmented generation
-├── InstanceManager.js     # Multi-instance communication
-├── StatsTracker.js        # Usage statistics
-└── ChatQueue.js           # Concurrent chat processing
-
-src/ai/
-├── UnifiedAIClient.js     # Multi-provider AI client
-└── providers/             # Anthropic, Google, OpenAI, MiniMax
+src/
+├── core/                      # Core engine
+│   ├── Engine.js              # Main orchestrator
+│   ├── EventBus.js            # Pub/sub communication
+│   ├── Router.js              # AI provider routing
+│   └── ConfigManager.js       # YAML config handling
+│
+├── instances/                 # Instance management
+│   ├── Instance.js            # Single AI instance
+│   ├── InstanceManager.js     # Multi-instance lifecycle
+│   ├── ToolExecutor.js        # 21 native tools
+│   ├── RAGEngine.js           # Vector search
+│   ├── MemoryManager.js       # Daily logs + memory
+│   ├── Scheduler.js           # Cron jobs
+│   └── SessionSpawner.js      # Background tasks
+│
+├── channels/                  # Communication channels
+│   ├── telegram/              # GramJS MTProto
+│   ├── whatsapp/              # Baileys Web
+│   ├── mission-control/       # Web dashboard
+│   └── terminal/              # CLI/REPL
+│
+├── ai/                        # AI providers
+│   ├── UnifiedAIClient.js
+│   └── providers/             # Kimi, Claude, Gemini, etc.
+│
+└── skills/                    # Plugin system
 ```
 
-## Providers
+---
 
-- **Kimi (Moonshot)** — K2.5 (OpenAI-compatible)
-- **Anthropic** — Claude Opus 4.6, Sonnet 4.5
-- **Google** — Gemini Flash/Pro/3
-- **OpenAI** — GPT-5.2, Codex (Responses API)
-- **MiniMax** — M2.5
-- **DeepSeek** — DeepSeek Chat
-- **Grok (xAI)** — Grok-2
-- **Z.AI** — GLM-5
+## AI Providers
 
-## Configuration
+| Provider | Models | Best For |
+|----------|--------|----------|
+| **Kimi (Moonshot)** | k2.5 | Primary model, fast function calling |
+| **Anthropic** | Opus 4.6, Sonnet 4.5 | Complex reasoning |
+| **Google** | Gemini Flash/Pro | Vision, transcription |
+| **OpenAI** | GPT-4, o3 | Fallback option |
+| **MiniMax** | M2.5 | Sub-agent execution |
+| **Ollama** | Local models | Self-hosted |
 
-### Per-Model Temperature
-```yaml
-models:
-  simple:
-    provider: kimi
-    model: kimi-k2.5
-    temperature: 1    # Kimi only accepts 1
+---
+
+## Directory Structure
+
 ```
-
-### Response Delay
-```yaml
-response_delay:
-  dm: 3       # seconds before replying in DM
-  group: 5    # seconds before replying in group
+~/.metaclaw/
+├── config.yaml                    # Global config
+├── instances/
+│   └── agent1/
+│       ├── config.yaml            # Instance config
+│       ├── SOUL.md                # Personality
+│       ├── MEMORY.md              # Long-term memory
+│       ├── TOOLS.md               # Environment notes
+│       ├── MY_RULES.md            # Learned rules
+│       ├── memory/                # Daily logs (YYYY-MM-DD.md)
+│       ├── knowledge/             # Knowledge base
+│       ├── stats/                 # Usage statistics
+│       └── logs/                  # Debug logs
+│           └── 2026-02-25/
+│               └── *.json
+└── skills/                        # Global skills
 ```
-
-### Config Validation
-Startup validates `config.yaml` against schema (Zod). Invalid configs fail fast with clear error messages.
 
 ## License
 MIT
