@@ -137,6 +137,12 @@ export class Engine {
       this.channelManager.sendText(channelId, evt.chatId, evt.text).catch(() => {});
     });
 
+    // Handle instance responses (e.g., /clear command)
+    this.eventBus.on('instance.response', (evt) => {
+      const channelId = evt.channelId || 'mission-control';
+      this.channelManager.sendText(channelId, evt.chatId, evt.text).catch(() => {});
+    });
+
     this._running = true;
     console.log('\n🐾 MetaClaw v3 is running!\n');
 
