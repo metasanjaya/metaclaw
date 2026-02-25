@@ -384,6 +384,9 @@ export class Instance {
       });
       return '✅ Conversation cleared.';
     }
+    
+    // TEMP DEBUG: Log all message texts
+    console.log(`[Instance:${this.id}] DEBUG: Message text="${msg.text}", eventBus=${!!this.eventBus}`);
 
     // Process voice message (transcribe)
     if (msg.voicePath && existsSync(msg.voicePath)) {

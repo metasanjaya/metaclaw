@@ -138,9 +138,14 @@ export class Engine {
     });
 
     // Handle instance responses (e.g., /clear command)
+    console.log(`[Engine] Registering instance.response listener on eventBus ${this.eventBus.id}`);
     this.eventBus.on('instance.response', (evt) => {
+      console.log(`[Engine] Received instance.response:`, JSON.stringify(evt));
       const channelId = evt.channelId || 'mission-control';
-      this.channelManager.sendText(channelId, evt.chatId, evt.text).catch(() => {});
+      console.log(`[Engine] Sending to channel ${channelId}, chat ${evt.chatId}`);
+      this.channelManager.sendText(channelId, evt.chatId, evt.text)
+        .then(() => console.log(`[Engine] Response sent successfully`))
+        .catch((err) => console.log(`[Engine] Error sending response:`, err.message));
     });
 
     this._running = true;
