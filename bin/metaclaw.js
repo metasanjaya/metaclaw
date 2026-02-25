@@ -89,9 +89,10 @@ program
 program
   .command('auth <provider> <instance>')
   .description('Authenticate/reconnect a channel (telegram, whatsapp)')
-  .action(async (provider, instance) => {
+  .option('-i, --interactive', 'Interactive authentication (prompts for phone/code)')
+  .action(async (provider, instance, opts) => {
     const { authChannel } = await import('../src/cli/auth.js');
-    await authChannel(provider, instance);
+    await authChannel(provider, instance, { interactive: opts.interactive });
   });
 
 // metaclaw terminal <instance>
