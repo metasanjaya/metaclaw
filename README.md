@@ -1,53 +1,82 @@
-# MetaClaw 🐾
+# MetaClaw 🐾 v3
 
 ![Version](https://img.shields.io/badge/version-3.0.0-blue)
+[![Node](https://img.shields.io/badge/node-%3E%3D20-green)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Personal AI assistant running on Telegram via GramJS (MTProto).
+**Multi-instance AI assistant platform** with native function calling, Mission Control dashboard, and cross-instance delegation.
 
-## Features
+---
 
-### Core
-- 🤖 **Smart AI Chat** — GPT-5.2 (simple) + Claude Opus 4.6 (complex) with auto-routing
-- 🧭 **AI-Powered Routing** — Gemini Flash intent classifier for smart model selection
-- 📬 **Message Batching** — DM=5s, Group=30s per user, typing detection resets timer
-- 🔧 **Native Function Calling** — Shell, web search, file R/W via provider-native tool APIs
-- 🧠 **Memory + RAG** — Auto-memory, semantic search, knowledge base with embeddings
-- 💬 **Conversation Persistence** — History with embedding-based relevance filtering & auto-compaction
-- 📨 **Message Queue** — Rate-limited sending with flood wait protection (no Telegram bans)
+## 🚀 What's New in v3
 
-### Native Tools (17 Built-in)
+| Feature | Description |
+|---------|-------------|
+| **Multi-Instance** | Run multiple AI agents (agent1, agent2, etc.) simultaneously |
+| **Mission Control** | Web dashboard for monitoring all instances (uWebSockets.js + vanilla JS) |
+| **21 Native Tools** | Shell, web, files, media, scheduling, sub-agents, memory, knowledge |
+| **Vision & Voice** | Image analysis (Kimi/Gemini) + voice transcription (Gemini) |
+| **Terminal Channel** | CLI/REPL interface for headless servers |
+| **WhatsApp Channel** | Baileys integration for WhatsApp Web |
+| **Scheduler** | Native cron with Telegram delivery |
+| **Session Spawner** | Background AI tasks with auto-announce |
+| **Debug Logger** | Per-request/response JSON logs for troubleshooting |
+| **Multi-Provider** | Kimi, Claude, Gemini, OpenAI, MiniMax, Ollama support |
+
+---
+
+## ✨ Core Features
+
+### Multi-Instance Architecture
+- 🏗️ **Multiple Agents** — Run separate instances with different personalities/purposes
+- 🔄 **Cross-Instance Delegation** — Delegate tasks between agents via Redis pub/sub
+- 📊 **Centralized Monitoring** — Mission Control dashboard for all instances
+- 💾 **Isolated Storage** — Each instance has separate memory, knowledge, and config
+
+### AI Providers
+- 🌙 **Kimi k2.5** — Primary model (fast, reliable function calling)
+- 🔮 **Claude Opus/Sonnet** — Complex reasoning tasks
+- ✨ **Gemini Flash/Pro** — Vision and transcription
+- 🤖 **OpenAI / MiniMax / Ollama** — Fallback and local options
+
+### Channels
+- 💬 **Telegram** — GramJS MTProto integration
+- 📱 **WhatsApp** — Baileys Web integration (on-demand QR login)
+- 🖥️ **Mission Control** — Web dashboard with real-time logs
+- ⌨️ **Terminal** — CLI/REPL for headless servers
+
+### Native Tools (21 Built-in)
 
 | Category | Tools |
 |----------|-------|
-| **Execution** | `shell`, `async_shell` |
-| **Web** | `search`, `fetch` |
+| **System** | `time`, `shell`, `async_shell` |
 | **Files** | `read`, `write`, `ls` |
-| **Media** | `image` |
-| **Scheduling** | `schedule` |
-| **Agents** | `spawn_subagent`, `active_tasks` |
-| **Knowledge** | `knowledge`, `remember` |
-| **Communication** | `send_file`, `send_voice`, `send_sticker` |
-| **Planning** | `task_plan` |
+| **Web** | `search` (Brave), `fetch` |
+| **Media** | `image` (vision analysis) |
+| **Memory** | `memory_search`, `memory_get` |
+| **Knowledge** | `knowledge_search`, `knowledge_add`, `remember` |
+| **Agents** | `spawn_subagent`, `active_tasks`, `spawn_kill` |
+| **Background** | `bg_run`, `bg_poll`, `bg_list`, `bg_kill` |
+| **Scheduling** | `schedule`, `schedule_list`, `schedule_remove` |
+| **Communication** | `send_message` |
 
-### Anti-Duplicate System
-Multi-layered protection against runaway task loops:
+### Memory & Knowledge
+- 🧠 **Semantic RAG** — Vector search with bge-m3 embeddings
+- 📝 **Daily Logs** — Auto-save conversations to dated files
+- 🔍 **Memory Search** — Semantic + keyword search across all history
+- 📚 **Knowledge Base** — Persistent facts with tag-based retrieval
 
-- **System prompt awareness** — AI always sees active tasks, warned not to duplicate
-- **`active_tasks` tool** — Check running tasks/agents/schedules before spawning
-- **Spawn dedup** — Fuzzy goal matching blocks similar sub-agents (>50% word overlap)
-- **Schedule dedup** — Same message + within 5 min window = blocked
-- **AsyncTask dedup** — Same command running = returns existing ID
-- **AsyncTask cooldown** — Same command completed <60s ago = skipped
-- **Max concurrent** — Max 3 async tasks simultaneously
-- **Isolated context restrictions** — No schedule/spawn tools in background processing
-- **Emergency commands** — `/stoptasks`, `/stopagents`, `/stopall`, `/clearall`
+### Sub-Agents & Background Tasks
+- 🤖 **Autonomous Workers** — Spawn AI agents for complex multi-step tasks
+- ⏱️ **Configurable** — Max rounds, timeout, model selection per task
+- 🔄 **Auto-Retry** — Exponential backoff on failures
+- 📈 **Progress Tracking** — Real-time status updates
 
-### Sub-Agents
-- 🤖 **Autonomous AI Workers** — Spawn background agents with plan & execute phases
-- 📋 **Dual-Model Architecture** — GPT-5.2 (planning, reasoning: high) + MiniMax M2.5 (execution)
-- ⏱️ **Configurable Turns** — Max 100 turns per task (configurable)
-- 🔄 **Auto-Retry** — 3 retries with 10-30s exponential backoff
+### Anti-Duplicate & Safety
+- **Active Task Awareness** — AI sees running tasks before spawning new ones
+- **Spawn Deduplication** — Fuzzy matching blocks similar concurrent agents
+- **Schedule Deduplication** — Same message within 5 min = blocked
+- **Emergency Commands** — `/stoptasks`, `/stopagents`, `/stopall`
 - 📊 **Progress Reporting** — Status updates every 5 turns
 - 💬 **Communication** — Progress reports, mid-task clarification, abort support
 - 🔗 **Task Chaining** — Output of task A feeds into task B
