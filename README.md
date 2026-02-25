@@ -1,6 +1,6 @@
 # MetaClaw 🐾
 
-![Version](https://img.shields.io/badge/version-2.4.0-blue)
+![Version](https://img.shields.io/badge/version-3.0.0-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Personal AI assistant running on Telegram via GramJS (MTProto).
