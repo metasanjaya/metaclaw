@@ -107,7 +107,7 @@
 
 ## Requirements
 - **OS:** Linux (Ubuntu 22.04+ recommended)
-- **Node.js:** v18+
+- **Node.js:** v20+
 - **npm:** v9+
 
 ## Quick Start
