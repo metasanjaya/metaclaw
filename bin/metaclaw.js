@@ -85,4 +85,22 @@ program
     await manageSkill(action, url, opts);
   });
 
+// metaclaw auth <provider> <instance>
+program
+  .command('auth <provider> <instance>')
+  .description('Authenticate/reconnect a channel (telegram, whatsapp)')
+  .action(async (provider, instance) => {
+    const { authChannel } = await import('../src/cli/auth.js');
+    await authChannel(provider, instance);
+  });
+
+// metaclaw terminal <instance>
+program
+  .command('terminal <instance>')
+  .description('Start interactive terminal for an instance')
+  .action(async (instance) => {
+    const { startTerminal } = await import('../src/cli/terminal.js');
+    await startTerminal(instance);
+  });
+
 program.parse();

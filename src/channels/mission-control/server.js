@@ -294,6 +294,84 @@ export class MCServer {
       });
     });
 
+    // --- Channel Auth/Reconnect APIs ---
+    this.app.post('/api/instances/:id/auth/telegram', async (res, req) => {
+      res.onAborted(() => {});
+      const id = req.getParameter(0);
+      try {
+        const { unlinkSync, existsSync, copyFileSync } = await import('node:fs');
+        const { join } = await import('node:path');
+        const dir = join(this.instanceManager.configManager.baseDir, 'instances', id);
+        const sessionFile = join(dir, 'sessions', 'telegram.session');
+        
+        if (!existsSync(dir)) throw new Error('Instance not found');
+        
+        // Backup old session if exists
+        if (existsSync(sessionFile)) {
+          const backupFile = `${sessionFile}.backup-${Date.now()}`;
+          copyFileSync(sessionFile, backupFile);
+          unlinkSync(sessionFile);
+        }
+        
+        this._json(res, { 
+          ok: true, 
+          message: 'Telegram session cleared. Restart instance to re-authenticate.',
+          action: 'restart_required'
+        });
+      } catch (e) {
+        res.cork(() => { res.writeStatus('400'); this._json(res, { error: e.message }); });
+      }
+    });
+
+    this.app.post('/api/instances/:id/auth/whatsapp', async (res, req) => {
+      res.onAborted(() => {});
+      const id = req.getParameter(0);
+      try {
+        const { rmSync, existsSync } = await import('node:fs');
+        const { join } = await import('node:path');
+        const dir = join(this.instanceManager.configManager.baseDir, 'instances', id);
+        const authDir = join(dir, 'sessions', 'whatsapp-auth');
+        
+        if (!existsSync(dir)) throw new Error('Instance not found');
+        
+        // Remove old WhatsApp auth
+        if (existsSync(authDir)) {
+          rmSync(authDir, { recursive: true, force: true });
+        }
+        
+        this._json(res, { 
+          ok: true, 
+          message: 'WhatsApp auth cleared. Enable WhatsApp in config and restart to re-authenticate.',
+          action: 'config_required'
+        });
+      } catch (e) {
+        res.cork(() => { res.writeStatus('400'); this._json(res, { error: e.message }); });
+      }
+    });
+
+    this.app.get('/api/instances/:id/auth/status', async (res, req) => {
+      res.onAborted(() => {});
+      const id = req.getParameter(0);
+      try {
+        const { existsSync } = await import('node:fs');
+        const { join } = await import('node:path');
+        const dir = join(this.instanceManager.configManager.baseDir, 'instances', id);
+        
+        if (!existsSync(dir)) throw new Error('Instance not found');
+        
+        const telegramSession = existsSync(join(dir, 'sessions', 'telegram.session'));
+        const whatsappAuth = existsSync(join(dir, 'sessions', 'whatsapp-auth'));
+        
+        this._json(res, {
+          ok: true,
+          telegram: { authenticated: telegramSession, sessionFile: telegramSession ? 'sessions/telegram.session' : null },
+          whatsapp: { authenticated: whatsappAuth, authDir: whatsappAuth ? 'sessions/whatsapp-auth' : null },
+        });
+      } catch (e) {
+        res.cork(() => { res.writeStatus('400'); this._json(res, { error: e.message }); });
+      }
+    });
+
     // --- Memory API ---
     this.app.get('/api/instances/:id/memory', (res, req) => {
       res.onAborted(() => {});

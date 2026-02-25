@@ -580,6 +580,10 @@
                 <div x-show="instConfig.hasTelegram" style="padding:8px 10px;background:var(--bg);border-radius:6px;border:1px solid var(--border);font-size:11px;">
                   <span style="color:var(--green);">●</span> Telegram connected
                   <span style="color:var(--text2);margin-left:8px;">Whitelist: <span x-text="instConfig.telegramWhitelist?.join(', ') || 'none'"></span></span>
+                  <div style="margin-top:8px;display:flex;gap:6px;">
+                    <button @click="reconnectTelegram(selectedInst)" class="btn-sm" style="font-size:10px;padding:4px 8px;background:var(--yellow);color:#000;border:none;border-radius:4px;cursor:pointer;">🔄 Reconnect Telegram</button>
+                    <button @click="reconnectWhatsApp(selectedInst)" class="btn-sm" style="font-size:10px;padding:4px 8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;">🔄 Reconnect WhatsApp</button>
+                  </div>
                 </div>
               </div>
 
@@ -941,6 +945,32 @@ function settingsPage() {
       } catch (e) {
         this.instMsg = 'Error: ' + e.message;
       } finally { this.instSaving = false; }
+    },
+    
+    async reconnectTelegram(instanceId) {
+      if (!confirm(`Reconnect Telegram for ${instanceId}?\n\nThis will clear the session and require re-authentication.`)) return;
+      try {
+        const r = await fetch(`/api/instances/${instanceId}/auth/telegram`, { method: 'POST' });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error);
+        this.instMsg = `✅ ${d.message}`;
+        alert(`✅ ${d.message}\n\nPlease restart the instance to complete re-authentication.`);
+      } catch (e) {
+        this.instMsg = 'Error: ' + e.message;
+      }
+    },
+    
+    async reconnectWhatsApp(instanceId) {
+      if (!confirm(`Reconnect WhatsApp for ${instanceId}?\n\nThis will clear the auth data.`)) return;
+      try {
+        const r = await fetch(`/api/instances/${instanceId}/auth/whatsapp`, { method: 'POST' });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error);
+        this.instMsg = `✅ ${d.message}`;
+        alert(`✅ ${d.message}\n\nPlease enable WhatsApp in config and restart the instance.`);
+      } catch (e) {
+        this.instMsg = 'Error: ' + e.message;
+      }
     },
   };
 }
